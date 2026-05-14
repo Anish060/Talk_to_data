@@ -1,0 +1,102 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows}
+
+\geometry{margin=1in}
+
+\titleformat{\section}{\large\bfseries\color{blue!80!black}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\bfseries}{}{0em}{}
+
+\title{
+    \textbf{Enterprise Data Retrieval System} \\
+    \large Hybrid Fusion of Knowledge Graphs, Vector Semantics, and Agentic SQL Generation
+}
+\author{Data Engineering \& AI Research Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document outlines the architecture of an enterprise-grade Natural Language to SQL (NL2SQL) system. By integrating a multi-layered Knowledge Graph (Neo4j), semantic vector embeddings (ChromaDB), and a Domain Ontology layer, the system bridges the gap between natural business language and complex relational database schemas. The architecture utilizes an agentic reasoning pipeline to ensure accurate join path discovery and context-aware SQL generation.
+\end{abstract}
+
+\section{System Architecture}
+The system operates on a four-tier retrieval and generation pipeline. Unlike standard RAG (Retrieval-Augmented Generation) systems, this architecture emphasizes structural truth through graph reasoning.
+
+\begin{center}
+\begin{tikzpicture}[node distance=2cm]
+\tikzstyle{startstop} = [rectangle, rounded corners, minimum width=3cm, minimum height=1cm,text centered, draw=black, fill=red!30]
+\tikzstyle{io} = [trapezium, trapezium left angle=70, trapezium right angle=110, minimum width=3cm, minimum height=1cm, text centered, draw=black, fill=blue!30]
+\tikzstyle{process} = [rectangle, minimum width=3cm, minimum height=1cm, text centered, draw=black, fill=orange!30]
+\tikzstyle{decision} = [diamond, minimum width=3cm, minimum height=1cm, text centered, draw=black, fill=green!30]
+
+\node (start) [startstop] {User Query};
+\node (intent) [process, below of=start] {Intent Extraction (LLM)};
+\node (retriever) [process, below of=intent] {Context Fusion (Graph + Vector)};
+\node (planner) [process, below of=retriever] {Query Planner (LLM)};
+\node (generator) [process, below of=planner] {SQL Generator (LLM)};
+\node (exec) [startstop, below of=generator] {SQL Execution};
+
+\draw [arrow] (start) -- (intent);
+\draw [arrow] (intent) -- (retriever);
+\draw [arrow] (retriever) -- (planner);
+\draw [arrow] (planner) -- (generator);
+\draw [arrow] (generator) -- (exec);
+\end{tikzpicture}
+\end{center}
+
+\section{Core Components}
+
+\subsection{Domain Ontology Layer}
+The system implements an automated ontology layer that maps technical schema names to business concepts.
+\begin{itemize}
+    \item \textbf{Concept Mapping:} Links technical table names (e.g., \texttt{Employees}) to business entities (e.g., \texttt{Personnel}).
+    \item \textbf{Synonym Expansion:} Enables queries using industry jargon (e.g., "Staff", "Workers") by traversing the \texttt{Synonym} nodes in Neo4j.
+\end{itemize}
+
+\subsection{Knowledge Graph (Neo4j)}
+The Knowledge Graph stores the structural metadata of the database.
+\begin{itemize}
+    \item \textbf{Nodes:} Table, Column, Concept, Synonym.
+    \item \textbf{Relationships:} \texttt{HAS\_COLUMN}, \texttt{REFERENCES}, \texttt{MAPS\_TO}, \texttt{REFERENCES\_TABLE}.
+    \item \textbf{Pathfinding:} Uses \texttt{shortestPath} algorithms to determine optimal join chains between disparate entities.
+\end{itemize}
+
+\subsection{Semantic Retrieval (ChromaDB)}
+A vector database indexes column descriptions and table purposes using high-dimensional embeddings. This provides a "fuzzy" backup for entity identification when direct ontological matches are not found.
+
+\section{Programmatic Data Flow}
+
+\subsection{Phase 1: Synchronization}
+\begin{enumerate}
+    \item \textbf{Metadata Extraction:} SQLAlchemy analyzes the target database and generates a \texttt{schema\_summary.json}.
+    \item \textbf{Ontology Generation:} An LLM processes the schema to identify business concepts and synonyms, stored in \texttt{ontology\_summary.json}.
+    \item \textbf{Graph Ingestion:} Batch Cypher queries populate Neo4j with the multi-tiered structure.
+\end{enumerate}
+
+\subsection{Phase 2: Retrieval \& Execution}
+\begin{enumerate}
+    \item \textbf{Intent Analysis:} LLM identifies metrics (e.g., Total Revenue) and entities (e.g., Region).
+    \item \textbf{Entity Expansion:} Neo4j expands "Region" into the physical \texttt{Territories} and \texttt{Regions} tables.
+    \item \textbf{Join Pathfinding:} Neo4j identifies that these tables connect via the \texttt{RegionID} column.
+    \item \textbf{Agentic Planning:} The LLM creates a logical JSON plan to join the identified tables.
+    \item \textbf{SQL Synthesis:} The final query is generated and executed against the relational database.
+\end{enumerate}
+
+\section{Conclusion}
+By decoupling the business vocabulary from the technical schema, this architecture provides a robust, scalable solution for enterprise data democratisation. The fusion of graph-based structural paths and vector-based semantics ensures that queries are both logically sound and contextually relevant.
+
+\end{document}

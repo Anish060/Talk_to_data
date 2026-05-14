@@ -1,0 +1,31 @@
+# Environment variables
+.env
+.env.example
+
+# Virtual environment
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases and temporary data
+data/*.db
+data/*.sqlite
+data/chroma/
+data/schema_summary.json
+data/ontology_summary.json
+
+# IDEs
+.vscode/
+.idea/
+
+# LaTeX temporary files
+*.aux
+*.log
+*.out
+*.toc
+*.pdf
