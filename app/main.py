@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from app.api.routes import router as api_router
 import os
 
-app = FastAPI(title="Enterprise Data Retrieval System")
+app = FastAPI(title="Talk to data")
 
 # Include API routes
 app.include_router(api_router, prefix="/api")

@@ -18,10 +18,13 @@ def sync_database():
     extractor = SchemaExtractor(db_url)
     schema_data = extractor.get_schema_summary()
     extractor.save_schema_to_json("data/schema_summary.json")
+    extractor.save_to_info_db(schema_data, "data/info.db")
     
     # 2. Update Knowledge Graph
     print("[2/4] Updating Neo4j Knowledge Graph...")
     neo4j = Neo4jClient()
+    # NEW: Clear existing graph to ensure domain purity
+    neo4j.query("MATCH (n) DETACH DELETE n")
     neo4j.ingest_schema(schema_data)
     
     # 3. Generate and Ingest Ontology
@@ -36,6 +39,7 @@ def sync_database():
     # 4. Update Vector Index
     print("[4/4] Updating Vector Search Index...")
     vector = VectorClient()
+    vector.clear()
     vector.upsert_metadata(schema_data)
     
     print("\n--- Synchronization Complete! ---")

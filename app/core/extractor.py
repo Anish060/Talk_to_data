@@ -53,6 +53,45 @@ class SchemaExtractor:
                     "default": col.get("default")
                 })
 
+            # NEW: Get Sample Data
+            try:
+                with self.engine.connect() as conn:
+                    from sqlalchemy import text
+                    result = conn.execute(text(f"SELECT * FROM \"{table_name}\" LIMIT 3"))
+                    samples = []
+                    for row in result:
+                        row_dict = dict(row._mapping)
+                        # Clean non-serializable types (like bytes/BLOB)
+                        cleaned_row = {}
+                        for k, v in row_dict.items():
+                            if isinstance(v, bytes):
+                                cleaned_row[k] = "<binary data>"
+                            elif hasattr(v, 'isoformat'): # Handle dates
+                                cleaned_row[k] = v.isoformat()
+                            else:
+                                cleaned_row[k] = v
+                        samples.append(cleaned_row)
+                    table_info["samples"] = samples
+            except Exception as e:
+                print(f"Warning: Could not fetch samples for {table_name}: {e}")
+                table_info["samples"] = []
+
+            # NEW: Get Unique Values for Categorical Columns
+            # We target string columns that might contain business entities (Names, Cities, etc.)
+            table_info["unique_values"] = {}
+            try:
+                with self.engine.connect() as conn:
+                    for col in table_info["columns"]:
+                        if "TEXT" in col["type"].upper() or "VARCHAR" in col["type"].upper():
+                            # Only sample if it looks like a category or name
+                            name_lower = col["name"].lower()
+                            if any(k in name_lower for k in ["name", "city", "country", "region", "category", "type", "title", "color"]):
+                                # Limit to top 100 unique values to avoid bloating the schema summary
+                                v_res = conn.execute(text(f"SELECT DISTINCT \"{col['name']}\" FROM \"{table_name}\" WHERE \"{col['name']}\" IS NOT NULL LIMIT 100"))
+                                table_info["unique_values"][col["name"]] = [str(row[0]) for row in v_res]
+            except Exception as e:
+                print(f"Warning: Could not fetch unique values for {table_name}: {e}")
+
             schema_data["tables"].append(table_info)
 
         # Semantic Relationship Discovery (Fuzzy Joins)
@@ -85,6 +124,76 @@ class SchemaExtractor:
         with open(filepath, 'w') as f:
             json.dump(schema, f, indent=4)
         print(f"Schema saved to {filepath}")
+
+    def save_to_info_db(self, schema_data: Dict[str, Any], info_db_path: str = "data/info.db"):
+        """
+        Saves the extracted schema metadata into a dedicated relational Info DB.
+        """
+        from sqlalchemy import Table, Column, String, Integer, Boolean, MetaData, JSON, create_engine
+        
+        info_engine = create_engine(f"sqlite:///{info_db_path}")
+        metadata = MetaData()
+
+        # Define Meta Tables
+        meta_tables = Table('meta_tables', metadata,
+            Column('id', Integer, primary_key=True),
+            Column('name', String, unique=True),
+            Column('is_view', Boolean),
+            Column('primary_key', JSON),
+            Column('samples', JSON)
+        )
+
+        meta_columns = Table('meta_columns', metadata,
+            Column('id', Integer, primary_key=True),
+            Column('table_name', String),
+            Column('name', String),
+            Column('type', String),
+            Column('nullable', Boolean),
+            Column('unique_values', JSON)
+        )
+
+        meta_values = Table('meta_values', metadata,
+            Column('id', Integer, primary_key=True),
+            Column('table_name', String),
+            Column('column_name', String),
+            Column('value', String)
+        )
+
+        # Create tables
+        metadata.drop_all(info_engine)
+        metadata.create_all(info_engine)
+
+        with info_engine.connect() as conn:
+            # Insert Tables
+            for table in schema_data["tables"]:
+                conn.execute(meta_tables.insert().values(
+                    name=table["name"],
+                    is_view=table["is_view"],
+                    primary_key=table["primary_key"],
+                    samples=table["samples"]
+                ))
+
+                # Insert Columns
+                for col in table["columns"]:
+                    unique_vals = table.get("unique_values", {}).get(col["name"], [])
+                    conn.execute(meta_columns.insert().values(
+                        table_name=table["name"],
+                        name=col["name"],
+                        type=col["type"],
+                        nullable=col["nullable"],
+                        unique_values=unique_vals
+                    ))
+                    
+                    # Insert into Meta Values for high-speed retrieval
+                    for val in unique_vals:
+                        conn.execute(meta_values.insert().values(
+                            table_name=table["name"],
+                            column_name=col["name"],
+                            value=val
+                        ))
+            
+            conn.commit()
+        print(f"Metadata persisted to Info DB at {info_db_path}")
 
 if __name__ == "__main__":
     # Example usage with sqlite

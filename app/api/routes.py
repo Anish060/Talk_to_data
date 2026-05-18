@@ -20,6 +20,7 @@ class QueryResponse(BaseModel):
     intent: dict
     plan: dict
     sql: str
+    grounding: list
     results: list
     columns: list
 
@@ -43,7 +44,7 @@ async def process_query(request: QueryRequest):
         
         # 2. Context
         retriever = ContextRetriever(neo4j, vector)
-        context = retriever.retrieve_context(intent)
+        context, grounding = retriever.retrieve_context(intent)
         print("Retrieved context.")
         
         # 3. Plan
@@ -51,22 +52,36 @@ async def process_query(request: QueryRequest):
         plan = planner.generate_plan(request.query, intent, context)
         print(f"Generated plan: {plan}")
         
-        # 4. SQL
+        # 4. SQL & Execute with Self-Correction Loop
         generator = SQLGenerator(llm)
-        sql = generator.generate_sql(request.query, plan, context)
-        print(f"Generated SQL: {sql}")
-        
-        # 5. Execute
-        with db_engine.connect() as conn:
-            df = pd.read_sql(text(sql), conn)
-            results = df.to_dict(orient="records")
-            columns = df.columns.tolist()
-            print(f"Executed SQL, found {len(results)} rows.")
+        max_retries = 3
+        current_error = None
+        sql = ""
+        results = []
+        columns = []
+
+        for attempt in range(max_retries):
+            try:
+                sql = generator.generate_sql(request.query, plan, context, error=current_error)
+                print(f"Attempt {attempt + 1} - Generated SQL: {sql}")
+                
+                with db_engine.connect() as conn:
+                    df = pd.read_sql(text(sql), conn)
+                    results = df.to_dict(orient="records")
+                    columns = df.columns.tolist()
+                    print(f"Executed SQL successfully on attempt {attempt + 1}")
+                    break # Success!
+            except Exception as e:
+                current_error = str(e)
+                print(f"SQL Execution failed (Attempt {attempt + 1}): {current_error}")
+                if attempt == max_retries - 1:
+                    raise HTTPException(status_code=500, detail=f"Failed to generate valid SQL after {max_retries} attempts. Last error: {current_error}")
             
         return {
             "intent": intent,
             "plan": plan,
             "sql": sql,
+            "grounding": grounding,
             "results": results,
             "columns": columns
         }
