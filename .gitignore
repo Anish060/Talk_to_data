@@ -16,6 +16,7 @@ __pycache__/
 data/*.db
 data/*.sqlite
 data/chroma/
+data/CRM/
 data/schema_summary.json
 data/ontology_summary.json
 
