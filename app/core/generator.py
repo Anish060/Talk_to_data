@@ -18,10 +18,12 @@ ONLY use tables and columns explicitly listed in the 'CANONICAL SCHEMA DEFINITIO
 ### PROTOCOL 3: JOIN PATH ENFORCEMENT
 You are STRICTLY FORBIDDEN from creating your own join keys or conditions. You MUST use the exact 'JOIN PATHS' provided in the context. If a path indicates a 'Bridge Table' (e.g., A -> B -> C), you MUST include table B in your joins. Never join A directly to C using unrelated columns like 'PurchaseOrderNumber'.
 
-### PROTOCOL 4: ANTI-INFLATION CHECK (MATHEMATICAL ACCURACY)
-If you join a Header table (e.g., SalesOrderHeader) with a Detail table (e.g., SalesOrderDetail), DO NOT SUM the Header-level totals (e.g., TotalDue). This causes 'Summation Explosion' where the total is multiplied by the number of line items. Instead, either:
-1. SUM the granular line items (e.g., LineTotal).
-2. Use a CTE/Sub-query to aggregate Header values before joining.
+### PROTOCOL 4: GRAIN PRESERVATION & DETAIL CTEs
+If a query involves a detail or line-item grain table in a 1:N relationship (e.g., Order Details, SalesOrderDetail, TransactionLines):
+1. You MUST define a single base CTE at that line-item/detail grain.
+2. Compute any line-level metrics (such as revenue, profit, quantity) ONCE inside this base CTE.
+3. Perform all downstream aggregations (SUM, AVG, COUNT) ONLY from that base CTE or by joining other tables to it.
+4. This preserves the grain, prevents cartesian row-multiplication from inflating metrics, and avoids the 'Summation Explosion'.
 
 ### PROTOCOL 5: AUDIT & EXECUTE
 1. Audit the schema, join paths, and mathematical logic for accuracy.

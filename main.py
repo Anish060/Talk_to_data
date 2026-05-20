@@ -57,6 +57,6 @@ def run_pipeline(user_query: str):
 
 if __name__ == "__main__":
     # Ensure data is ready (one-time setup if needed)
-    # run_pipeline("Show me the total revenue for user with id 1")
+    run_pipeline("List the top 3 customers by total revenue from German-supplied products shipped through United Package. For each customer, display customer name, country, total revenue, distinct product count, most purchased category, and first order date.")
     # For now, just print ready
     print("Pipeline ready. Run with a query to test.")

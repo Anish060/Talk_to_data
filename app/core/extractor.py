@@ -79,18 +79,17 @@ class SchemaExtractor:
             # NEW: Get Unique Values for Categorical Columns
             # We target string columns that might contain business entities (Names, Cities, etc.)
             table_info["unique_values"] = {}
-            try:
-                with self.engine.connect() as conn:
-                    for col in table_info["columns"]:
-                        if "TEXT" in col["type"].upper() or "VARCHAR" in col["type"].upper():
-                            # Only sample if it looks like a category or name
-                            name_lower = col["name"].lower()
-                            if any(k in name_lower for k in ["name", "city", "country", "region", "category", "type", "title", "color"]):
+            if not is_view:
+                try:
+                    with self.engine.connect() as conn:
+                        for col in table_info["columns"]:
+                            col_type_upper = col["type"].upper()
+                            if "TEXT" in col_type_upper or "VARCHAR" in col_type_upper or "CHAR" in col_type_upper:
                                 # Limit to top 100 unique values to avoid bloating the schema summary
                                 v_res = conn.execute(text(f"SELECT DISTINCT \"{col['name']}\" FROM \"{table_name}\" WHERE \"{col['name']}\" IS NOT NULL LIMIT 100"))
                                 table_info["unique_values"][col["name"]] = [str(row[0]) for row in v_res]
-            except Exception as e:
-                print(f"Warning: Could not fetch unique values for {table_name}: {e}")
+                except Exception as e:
+                    print(f"Warning: Could not fetch unique values for {table_name}: {e}")
 
             schema_data["tables"].append(table_info)
 

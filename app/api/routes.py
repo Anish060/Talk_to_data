@@ -24,18 +24,16 @@ class QueryResponse(BaseModel):
     results: list
     columns: list
 
-# Database engine
+# Database engine and shared clients
 db_engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/test_sample.db"))
+llm = LLMClient()
+neo4j = Neo4jClient()
+vector = VectorClient()
 
 @router.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
     try:
         print(f"--- Processing query: {request.query} ---")
-        
-        # Initialize clients inside to catch errors
-        llm = LLMClient()
-        neo4j = Neo4jClient()
-        vector = VectorClient()
         print(f"Processing query: {request.query}")
         # 1. Intent
         intent_ext = IntentExtractor(llm)
