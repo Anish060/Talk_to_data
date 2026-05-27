@@ -2,7 +2,7 @@ import json
 import os
 import pathlib
 from typing import Dict, List, Optional
-
+from functools import lru_cache
 
 def _resolve_path() -> Optional[pathlib.Path]:
     """Resolve the catalogue JSON file path.
@@ -22,30 +22,38 @@ def _resolve_path() -> Optional[pathlib.Path]:
     # Return the most recently modified file
     return max(existing, key=lambda p: p.stat().st_mtime)
 
-# Load the catalogue at import time
-_CAT_PATH = _resolve_path()
-if not _CAT_PATH:
-    raise FileNotFoundError('No catalogue JSON found. Set CLIENT_DOC_PATH in .env or place a catalogue file in the project.')
+@lru_cache(maxsize=1)
+def _load_catalogue() -> dict:
+    """Lazy load and cache the catalogue file."""
+    cat_path = _resolve_path()
+    if not cat_path:
+        raise FileNotFoundError('No catalogue JSON found. Set CLIENT_DOC_PATH in .env or place a catalogue file in the project.')
+    
+    with open(cat_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-with open(_CAT_PATH, 'r', encoding='utf-8') as f:
-    _CATALOGUE = json.load(f)
-
-
+@lru_cache(maxsize=2048)
 def get_rule_for_field(field: str) -> Optional[Dict]:
     """Return the rule dict that applies to a given fully qualified field name.
     The field should be in the form 'Table.Column'.
     """
-    for rule in _CATALOGUE.get('rules', []):
+    catalogue = _load_catalogue()
+    for rule in catalogue.get('rules', []):
         if field in rule.get('applies_to', []):
             return rule
     return None
 
-
 def get_default(key: str):
     """Retrieve a default value from the catalogue's defaults section."""
-    return _CATALOGUE.get('defaults', {}).get(key)
-
+    catalogue = _load_catalogue()
+    return catalogue.get('defaults', {}).get(key)
 
 def all_rules() -> List[Dict]:
     """Return the list of all rule dictionaries from the catalogue."""
-    return _CATALOGUE.get('rules', [])
+    catalogue = _load_catalogue()
+    return catalogue.get('rules', [])
+
+def clear_catalogue_cache() -> None:
+    """Clear the in-memory cache to hot-reload the catalogue."""
+    _load_catalogue.cache_clear()
+    get_rule_for_field.cache_clear()
