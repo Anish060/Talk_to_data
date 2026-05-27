@@ -20,6 +20,8 @@ data/CRM/
 data/schema_summary.json
 data/ontology_summary.json
 
+scripts/data/*
+
 # IDEs
 .vscode/
 .idea/

@@ -1,0 +1,299 @@
+{
+    "database": "AdventureWorks",
+    "rule_group": "numeric_derived_value_rules",
+    "rules": [
+        {
+            "id": "NUM_001_MONEY_ROUND_2",
+            "type": "formatting_rule",
+            "applies_to": [
+                "SalesOrderHeader.SubTotal",
+                "SalesOrderHeader.TaxAmt",
+                "SalesOrderHeader.Freight",
+                "SalesOrderHeader.TotalDue",
+                "SalesOrderDetail.UnitPrice",
+                "SalesOrderDetail.LineTotal",
+                "Product.StandardCost",
+                "Product.ListPrice"
+            ],
+            "trigger_phrases": [
+                "revenue",
+                "sales",
+                "amount",
+                "total amount",
+                "discounted revenue",
+                "profit",
+                "cost",
+                "tax",
+                "freight",
+                "average order value"
+            ],
+            "instruction": "Monetary derived values must be rounded to 2 decimal places.",
+            "sql_rule": "ROUND(expression, 2)"
+        },
+        {
+            "id": "NUM_002_PERSON_AVERAGE_INTEGER",
+            "type": "integer_output_rule",
+            "applies_to": [
+                "Customer.CustomerID"
+            ],
+            "trigger_phrases": [
+                "average number of customers",
+                "avg customers",
+                "average customers per city",
+                "average customers per country",
+                "average number of people",
+                "average number of persons"
+            ],
+            "instruction": "If the derived value represents an average count of customers/persons, round the final result to 0 decimal places.",
+            "sql_rule": "ROUND(COUNT(DISTINCT Customer.CustomerID) * 1.0 / NULLIF(denominator, 0), 0)"
+        },
+        {
+            "id": "NUM_003_ENTITY_COUNT_DISTINCT",
+            "type": "counting_rule",
+            "applies_to": [
+                "Customer.CustomerID",
+                "Product.ProductID",
+                "SalesOrderHeader.SalesOrderID",
+                "SalesOrderDetail.SalesOrderDetailID",
+                "Address.AddressID",
+                "ProductCategory.ProductCategoryID",
+                "ProductModel.ProductModelID"
+            ],
+            "trigger_phrases": [
+                "number of customers",
+                "count of customers",
+                "number of products",
+                "number of orders",
+                "distinct products",
+                "distinct customers",
+                "distinct cities"
+            ],
+            "instruction": "When counting entities after joins, use COUNT(DISTINCT id_column) to avoid duplicate counts.",
+            "sql_rule": "COUNT(DISTINCT id_column)"
+        },
+        {
+            "id": "NUM_004_IDS_NOT_MEASURES",
+            "type": "identifier_rule",
+            "applies_to": [
+                "Customer.CustomerID",
+                "SalesOrderHeader.SalesOrderID",
+                "SalesOrderDetail.SalesOrderDetailID",
+                "Product.ProductID",
+                "ProductCategory.ProductCategoryID",
+                "ProductModel.ProductModelID",
+                "Address.AddressID"
+            ],
+            "trigger_phrases": [
+                "average customer id",
+                "sum customer id",
+                "average product id",
+                "sum order id",
+                "highest id"
+            ],
+            "instruction": "ID columns are identifiers, not numerical measures. Do not SUM or AVG them. Use them only for joins, grouping, filtering, ordering, or COUNT(DISTINCT).",
+            "sql_rule": "Do not use SUM(id_column) or AVG(id_column)."
+        },
+        {
+            "id": "NUM_005_PERCENTAGE_SCALE",
+            "type": "percentage_rule",
+            "applies_to": [
+                "SalesOrderDetail.UnitPriceDiscount"
+            ],
+            "trigger_phrases": [
+                "percentage",
+                "percent",
+                "rate",
+                "discount percentage",
+                "share of",
+                "contribution percentage"
+            ],
+            "instruction": "If the user asks for a percentage, multiply the ratio by 100 and round to 2 decimal places.",
+            "sql_rule": "ROUND(numerator * 100.0 / NULLIF(denominator, 0), 2)"
+        },
+        {
+            "id": "NUM_006_AVOID_INTEGER_DIVISION",
+            "type": "division_rule",
+            "applies_to": [
+                "all_ratio_metrics",
+                "all_average_metrics",
+                "all_percentage_metrics"
+            ],
+            "trigger_phrases": [
+                "average",
+                "ratio",
+                "percentage",
+                "per",
+                "rate"
+            ],
+            "instruction": "Use floating-point division for ratios, averages, percentages, and per-unit metrics.",
+            "sql_rule": "numerator * 1.0 / NULLIF(denominator, 0)"
+        },
+        {
+            "id": "NUM_007_DIVISION_BY_ZERO_PROTECTION",
+            "type": "safety_rule",
+            "applies_to": [
+                "all_derived_metrics_with_denominator"
+            ],
+            "trigger_phrases": [
+                "average",
+                "ratio",
+                "percentage",
+                "per",
+                "margin",
+                "rate"
+            ],
+            "instruction": "Any derived metric with a denominator must protect against division by zero using NULLIF.",
+            "sql_rule": "expression / NULLIF(denominator, 0)"
+        },
+        {
+            "id": "NUM_008_DISCOUNTED_REVENUE_FORMULA",
+            "type": "metric_formula",
+            "applies_to": [
+                "SalesOrderDetail.OrderQty",
+                "SalesOrderDetail.UnitPrice",
+                "SalesOrderDetail.UnitPriceDiscount",
+                "SalesOrderDetail.LineTotal"
+            ],
+            "trigger_phrases": [
+                "discounted revenue",
+                "net revenue",
+                "revenue after discount",
+                "sales after discount"
+            ],
+            "instruction": "For AdventureWorks, discounted revenue can be calculated using LineTotal. If LineTotal is unavailable, use OrderQty * UnitPrice * (1 - UnitPriceDiscount).",
+            "preferred_sql_rule": "ROUND(SUM(SalesOrderDetail.LineTotal), 2)",
+            "fallback_sql_rule": "ROUND(SUM(SalesOrderDetail.OrderQty * SalesOrderDetail.UnitPrice * (1 - SalesOrderDetail.UnitPriceDiscount)), 2)"
+        },
+        {
+            "id": "NUM_009_PROFIT_FORMULA",
+            "type": "metric_formula",
+            "applies_to": [
+                "SalesOrderDetail.LineTotal",
+                "SalesOrderDetail.OrderQty",
+                "Product.StandardCost"
+            ],
+            "trigger_phrases": [
+                "profit",
+                "gross profit",
+                "margin",
+                "profit margin"
+            ],
+            "instruction": "Profit is revenue minus product cost. Profit margin is profit divided by revenue multiplied by 100.",
+            "profit_sql_rule": "ROUND(SUM(SalesOrderDetail.LineTotal) - SUM(SalesOrderDetail.OrderQty * Product.StandardCost), 2)",
+            "margin_sql_rule": "ROUND((SUM(SalesOrderDetail.LineTotal) - SUM(SalesOrderDetail.OrderQty * Product.StandardCost)) * 100.0 / NULLIF(SUM(SalesOrderDetail.LineTotal), 0), 2)"
+        },
+        {
+            "id": "NUM_010_ORDER_LEVEL_AGGREGATION",
+            "type": "aggregation_grain_rule",
+            "applies_to": [
+                "SalesOrderHeader.SalesOrderID",
+                "SalesOrderDetail.LineTotal"
+            ],
+            "trigger_phrases": [
+                "average order value",
+                "avg order value",
+                "order total",
+                "average revenue per order"
+            ],
+            "instruction": "For order-level metrics, first aggregate line items at SalesOrderID level, then calculate the final metric.",
+            "sql_pattern": "WITH order_totals AS (SELECT SalesOrderID, SUM(LineTotal) AS order_total FROM SalesOrderDetail GROUP BY SalesOrderID)"
+        },
+        {
+            "id": "NUM_011_ROUND_FINAL_RESULT_ONLY",
+            "type": "rounding_stage_rule",
+            "applies_to": [
+                "all_monetary_metrics",
+                "all_ratio_metrics",
+                "all_percentage_metrics"
+            ],
+            "trigger_phrases": [
+                "revenue",
+                "average",
+                "percentage",
+                "ratio",
+                "profit",
+                "margin"
+            ],
+            "instruction": "Apply ROUND only to the final aggregated result, not to each row before aggregation.",
+            "wrong_sql": "SUM(ROUND(row_expression, 2))",
+            "correct_sql": "ROUND(SUM(row_expression), 2)"
+        },
+        {
+            "id": "NUM_012_QUANTITY_INTEGER",
+            "type": "integer_measure_rule",
+            "applies_to": [
+                "SalesOrderDetail.OrderQty"
+            ],
+            "trigger_phrases": [
+                "quantity",
+                "units sold",
+                "number of units",
+                "total quantity",
+                "average quantity"
+            ],
+            "instruction": "Quantity-based final values should normally be whole numbers unless the user explicitly asks for an average quantity.",
+            "sum_sql_rule": "SUM(SalesOrderDetail.OrderQty)",
+            "avg_sql_rule": "ROUND(AVG(SalesOrderDetail.OrderQty), 2)"
+        },
+        {
+            "id": "NUM_013_NULL_NUMERIC_HANDLING",
+            "type": "null_handling_rule",
+            "applies_to": [
+                "SalesOrderHeader.Freight",
+                "SalesOrderHeader.TaxAmt",
+                "Product.Weight",
+                "Product.StandardCost",
+                "Product.ListPrice"
+            ],
+            "trigger_phrases": [
+                "total freight",
+                "total tax",
+                "average weight",
+                "total cost",
+                "average cost"
+            ],
+            "instruction": "Use COALESCE for nullable numeric fields only when NULL means missing/zero is acceptable. Do not blindly replace unknown values with zero.",
+            "sql_rule": "COALESCE(column, 0)"
+        },
+        {
+            "id": "NUM_014_WEIGHT_UNIT_RULE",
+            "type": "unit_rule",
+            "applies_to": [
+                "Product.Weight"
+            ],
+            "trigger_phrases": [
+                "weight",
+                "average weight",
+                "total weight",
+                "heaviest",
+                "lightest"
+            ],
+            "instruction": "Weight calculations must preserve the Product.Weight unit. If the user asks for another unit, explicitly convert it.",
+            "sql_rule": "ROUND(AVG(Product.Weight), 2)"
+        },
+        {
+            "id": "NUM_015_TOP_RANKING_TIE_BREAK",
+            "type": "ranking_rule",
+            "applies_to": [
+                "all_top_n_numeric_metrics"
+            ],
+            "trigger_phrases": [
+                "top",
+                "highest",
+                "lowest",
+                "most",
+                "least"
+            ],
+            "instruction": "When ranking by a derived numeric metric, add deterministic tie-breakers using entity name or ID.",
+            "sql_rule": "ORDER BY metric DESC, entity_id ASC"
+        }
+    ],
+    "defaults": {
+        "monetary_round": 2,
+        "percentage_round": 2,
+        "person_count_average_round": 0,
+        "use_nullif_for_division": true,
+        "use_distinct_for_entity_counts": true,
+        "round_final_result_only": true
+    }
+}

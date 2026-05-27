@@ -33,7 +33,15 @@ class IntentExtractor:
         
         json_str = self.llm.extract_json(prompt, system_prompt)
         try:
-            return json.loads(json_str)
+            intent = json.loads(json_str)
+            # Enrich intent with client documentation metadata if enabled
+            from app.state import USE_CLIENT_DOC
+            if USE_CLIENT_DOC:
+                from app.utils.metadata_loader import load_client_documentation
+                field_meta = load_client_documentation()
+                if field_meta:
+                    intent["field_meta"] = field_meta
+            return intent
         except Exception as e:
             print(f"Error parsing intent JSON: {e}")
             return {"error": "Failed to parse intent", "raw": json_str}

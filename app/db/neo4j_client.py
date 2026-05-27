@@ -3,6 +3,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+import json
+from app.utils.catalogue_loader import get_rule_for_field
+from typing import List, Dict, Any
 
 class Neo4jClient:
     def __init__(self, uri=None, user=None, password=None):
@@ -88,6 +91,81 @@ class Neo4jClient:
             {"fks": all_fks}
         )
         print(f"Schema ingestion complete. Ingested {len(tables)} tables, {len(all_columns)} columns, and {len(all_fks)} relationships.")
+
+    def ingest_rules(self, schema_data: dict):
+        """
+        Ingest rule metadata from the catalogue into Neo4j.
+        For each column, we look up a rule via get_rule_for_field.
+        If a rule exists, we create a :Rule node with its id, type, and optional sql_rule.
+        Then we connect the column node to the rule node via a :HAS_RULE relationship.
+        """
+        # Build a list of rule entries
+        rule_entries = []
+        for table in schema_data.get('tables', []):
+            table_name = table.get('name')
+            for col in table.get('columns', []):
+                col_name = col.get('name')
+                field = f"{table_name}.{col_name}"
+                rule = get_rule_for_field(field)
+                if rule:
+                    rule_entries.append({
+                        'table_name': table_name,
+                        'col_name': col_name,
+                        'rule_id': rule.get('id'),
+                        'rule_type': rule.get('type'),
+                        'sql_rule': json.dumps(rule.get('sql_rule')) if rule.get('sql_rule') is not None else None
+                    })
+        if not rule_entries:
+            print("[Neo4j] No rule metadata to ingest.")
+            return
+        # Cypher to create Rule nodes and link them
+        cypher = """
+        UNWIND $rules AS r
+        MATCH (t:Table {name: r.table_name})-[:HAS_COLUMN]->(c:Column {name: r.col_name})
+        MERGE (rule:Rule {id: r.rule_id})
+        SET rule.type = r.rule_type,
+            rule.sql_rule = r.sql_rule
+        MERGE (c)-[:HAS_RULE]->(rule)
+        """
+        self.query(cypher, {'rules': rule_entries})
+        print(f"[Neo4j] Ingested {len(rule_entries)} rule nodes.")
+
+    def ingest_recursive_rules(self):
+        """
+        Ingest catalogue rules of type "recursive" that apply to whole tables.
+        Creates a :RecursiveRule node and links it to the corresponding :Table.
+        """
+        # Load all rules from the catalogue file via the utility
+        try:
+            from app.utils.catalogue_loader import all_rules
+            rules = all_rules()
+        except Exception as e:
+            print(f"[Neo4j] Could not load recursive rules: {e}")
+            return
+        for rule in rules:
+            if rule.get('type') != 'recursive':
+                continue
+            applies = rule.get('applies_to', [])
+            for tbl in applies:
+                # Create a RecursiveRule node and link to the table
+                self.query(
+                    """
+                    MATCH (t:Table {name: $table_name})
+                    MERGE (r:RecursiveRule {id: $rule_id})
+                    SET r.type = $rule_type,
+                        r.description = $desc,
+                        r.cypher_template = $template
+                    MERGE (t)-[:HAS_RECURSIVE_RULE]->(r)
+                    """,
+                    {
+                        "table_name": tbl,
+                        "rule_id": rule.get('id'),
+                        "rule_type": rule.get('type'),
+                        "desc": rule.get('description'),
+                        "template": rule.get('cypher_template')
+                    }
+                )
+        print(f"[Neo4j] Ingested {len([r for r in rules if r.get('type') == 'recursive'])} recursive rules.")
 
     def ingest_ontology(self, ontology_data: List[Dict[str, Any]]):
         """

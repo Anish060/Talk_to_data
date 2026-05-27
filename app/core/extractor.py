@@ -1,6 +1,11 @@
 from sqlalchemy import create_engine, inspect
 from typing import List, Dict, Any
 import json
+import logging
+from app.utils.encoding_helper import safe_str
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Duplicate class definition removed (handled by proper definition below)
 
 class SchemaExtractor:
     def __init__(self, database_url: str):
@@ -85,9 +90,14 @@ class SchemaExtractor:
                         for col in table_info["columns"]:
                             col_type_upper = col["type"].upper()
                             if "TEXT" in col_type_upper or "VARCHAR" in col_type_upper or "CHAR" in col_type_upper:
-                                # Limit to top 100 unique values to avoid bloating the schema summary
-                                v_res = conn.execute(text(f"SELECT DISTINCT \"{col['name']}\" FROM \"{table_name}\" WHERE \"{col['name']}\" IS NOT NULL LIMIT 100"))
-                                table_info["unique_values"][col["name"]] = [str(row[0]) for row in v_res]
+                                # First attempt normal query
+                                try:
+                                    v_res = conn.execute(text(f"SELECT DISTINCT \"{col['name']}\" FROM \"{table_name}\" WHERE \"{col['name']}\" IS NOT NULL LIMIT 100"))
+                                    table_info["unique_values"][col["name"]] = [safe_str(row[0]) for row in v_res]
+                                except Exception as e:
+                                    # Fallback: fetch as BLOB and decode safely
+                                    v_res_blob = conn.execute(text(f"SELECT DISTINCT CAST(\"{col['name']}\" AS BLOB) FROM \"{table_name}\" WHERE \"{col['name']}\" IS NOT NULL LIMIT 100"))
+                                    table_info["unique_values"][col["name"]] = [safe_str(row[0]) for row in v_res_blob]
                 except Exception as e:
                     print(f"Warning: Could not fetch unique values for {table_name}: {e}")
 
