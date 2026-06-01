@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.core.intent_extractor import IntentExtractor
 from app.core.retriever import ContextRetriever
@@ -7,8 +7,11 @@ from app.core.generator import SQLGenerator
 from app.utils.llm import LLMClient
 from app.db.neo4j_client import Neo4jClient
 from app.db.vector_client import VectorClient
+from app.db.redis_client import redis_client
 import os
 import re
+import hashlib
+import json
 from sqlalchemy import create_engine, text
 import pandas as pd
 def _make_readonly_engine(db_url: str):
@@ -47,16 +50,42 @@ class QueryResponse(BaseModel):
     grounding: list
     results: list
     columns: list
+    cached: bool
 
-# Database engine and shared clients
-db_engine = _make_readonly_engine(os.getenv("DATABASE_URL", "sqlite:///data/test_sample.db"))
+# Local in-memory fallback for verified query results (when Redis is offline)
+_local_verified_query_cache = {}
+
+# Shared LLMClient (stateless, does not hold active connection sockets)
 llm = LLMClient()
-neo4j = Neo4jClient()
-vector = VectorClient()
 
 @router.post("/query", response_model=QueryResponse)
-async def process_query(request: QueryRequest):
+async def process_query(request: QueryRequest, http_request: Request):
     try:
+        # Sanitize query and generate unique identifier hash
+        query_sanitized = request.query.strip().lower()
+        query_hash = hashlib.sha256(query_sanitized.encode('utf-8')).hexdigest()
+        cache_key = f"verified_query:{query_hash}"
+
+        # 1. Try Redis cache lookup
+        if redis_client.is_connected:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                payload = json.loads(cached_data)
+                payload["cached"] = True
+                print(f"⚡ [CACHE] Cache hit in Redis for query: '{request.query}'")
+                return payload
+        # 2. Try Local Memory cache lookup (if Redis is offline)
+        elif query_hash in _local_verified_query_cache:
+            payload = _local_verified_query_cache[query_hash].copy()
+            payload["cached"] = True
+            print(f"⚡ [CACHE] Cache hit in Local Memory for query: '{request.query}'")
+            return payload
+
+        # Retrieve active connection instances from application state
+        db_engine = http_request.app.state.db_engine
+        neo4j = http_request.app.state.neo4j
+        vector = http_request.app.state.vector
+
         print(f"--- Processing query: {request.query} ---")
         # 1. Intent
         intent_ext = IntentExtractor(llm)
@@ -104,14 +133,24 @@ async def process_query(request: QueryRequest):
                 if attempt == max_retries - 1:
                     raise HTTPException(status_code=500, detail=f"Failed to generate valid SQL after {max_retries} attempts. Last error: {current_error}")
             
-        return {
+        # 3. Compile the response payload (marking this initial run as cached=False)
+        response_payload = {
             "intent": intent,
             "plan": plan,
             "sql": sql,
             "grounding": grounding,
             "results": results,
-            "columns": columns
+            "columns": columns,
+            "cached": False
         }
+
+        # 4. Save to cache database for subsequent identical queries
+        if redis_client.is_connected:
+            redis_client.setex(cache_key, 86400, json.dumps(response_payload))
+        else:
+            _local_verified_query_cache[query_hash] = response_payload
+
+        return response_payload
     except Exception as e:
         import traceback
         traceback.print_exc()

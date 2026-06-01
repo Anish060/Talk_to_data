@@ -1,8 +1,14 @@
 import os
+import hashlib
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
+from app.db.redis_client import redis_client
 
 load_dotenv()
+
+# Local fallback cache variable for LLM completions
+_local_llm_cache = {}
 
 class LLMClient:
     def __init__(self, provider=None):
@@ -19,6 +25,35 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {provider}")
 
     def chat(self, messages, temperature=0):
+        """Chat completion call wrapped with dynamic Redis and local cache fallback."""
+        # 1. Generate unique request key from model, message payload, and temperature
+        msg_str = json.dumps(messages, sort_keys=True)
+        key_content = f"{self.model}:{msg_str}:{temperature}"
+        msg_hash = hashlib.sha256(key_content.encode('utf-8')).hexdigest()
+
+        # 2. Redis Caching Path
+        if redis_client.is_connected:
+            cache_key = f"llm:chat:{msg_hash}"
+            cached = redis_client.get(cache_key)
+            if cached:
+                # Return cached content directly in <1ms
+                return cached
+            
+            content = self._call_completion_api(messages, temperature)
+            # Store in Redis for 24 hours
+            redis_client.setex(cache_key, 86400, content)
+            return content
+
+        # 3. Local Fallback Cache Path
+        if msg_hash in _local_llm_cache:
+            return _local_llm_cache[msg_hash]
+            
+        content = self._call_completion_api(messages, temperature)
+        _local_llm_cache[msg_hash] = content
+        return content
+
+    def _call_completion_api(self, messages, temperature):
+        """Direct call to the downstream OpenAI/Ollama completion endpoint."""
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
