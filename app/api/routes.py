@@ -92,8 +92,20 @@ async def process_query(request: QueryRequest, http_request: Request):
         intent = intent_ext.extract(request.query)
         print(f"Extracted intent: {intent}")
         
-        # 2. Context
+        # 2. Schema Relevance Check
         retriever = ContextRetriever(neo4j, vector)
+        relevance_score, matched, unmatched = retriever.check_relevance(intent)
+        print(f"Relevance Score: {relevance_score:.2f} (Matched: {matched}, Unmatched: {unmatched})")
+        
+        if relevance_score < 0.7:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query rejected due to low database relevance ({relevance_score*100:.1f}%). "
+                       f"Matched: {', '.join(matched) or 'None'}. "
+                       f"Unmatched: {', '.join(unmatched) or 'None'}."
+            )
+        
+        # 3. Context
         context, grounding = retriever.retrieve_context(intent)
         print("Retrieved context.")
         

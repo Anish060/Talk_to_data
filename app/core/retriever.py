@@ -142,6 +142,107 @@ class ContextRetriever:
                     paths.append(f"  * CONSTRAINT: '{ta}' is a Header table relative to the Detail table '{tb}'. Do not SUM() aggregate columns from '{ta}' directly after joining.")
         return paths
 
+    def check_relevance(self, intent: Dict[str, Any]) -> tuple[float, list[str], list[str]]:
+        """
+        Check query relevance against the database schema and values.
+        Returns a tuple: (relevance_score, matched_concepts, unmatched_concepts)
+        """
+        concepts = []
+        for key in ["entities", "metrics", "filters", "dimensions"]:
+            if key in intent and isinstance(intent[key], list):
+                concepts.extend(intent[key])
+        
+        # Deduplicate and clean
+        unique_concepts = []
+        for c in concepts:
+            c_clean = str(c).strip()
+            if c_clean and c_clean not in unique_concepts:
+                unique_concepts.append(c_clean)
+                
+        if not unique_concepts:
+            return 0.0, [], []
+            
+        matched = []
+        unmatched = []
+        
+        for concept in unique_concepts:
+            is_matched = False
+            
+            # 1. Check Neo4j Synonyms
+            try:
+                synonym_matches = self.graph.query(
+                    """
+                    MATCH (s:Synonym)
+                    WHERE replace(toLower(s.name), ' ', '') = replace(toLower($name), ' ', '')
+                    MATCH (s)-[:IS_SYNONYM_FOR]->(con:Concept)-[:MAPS_TO]->(t:Table)
+                    RETURN t.name as table_name LIMIT 1
+                    """,
+                    {"name": concept}
+                )
+                if synonym_matches:
+                    is_matched = True
+            except Exception as e:
+                print(f"Neo4j relevance check failed for '{concept}': {e}")
+                
+            # 2. Check SQLite Metadata (tables, columns, exact/fuzzy values)
+            if not is_matched:
+                concept_nospace = "".join(concept.split()).lower()
+                try:
+                    with self.engine.connect() as conn:
+                        # Check table name
+                        tbl_res = conn.execute(
+                            text("SELECT name FROM meta_tables WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
+                            {"t": concept_nospace}
+                        ).fetchone()
+                        if tbl_res:
+                            is_matched = True
+                            
+                        # Check column name
+                        if not is_matched:
+                            col_res = conn.execute(
+                                text("SELECT name FROM meta_columns WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
+                                {"t": concept_nospace}
+                            ).fetchone()
+                            if col_res:
+                                is_matched = True
+                                
+                        # Check values
+                        if not is_matched:
+                            val_res = conn.execute(
+                                text("SELECT value FROM meta_values WHERE replace(LOWER(value), ' ', '') = :t OR replace(LOWER(value), ' ', '') LIKE :t_like LIMIT 1"),
+                                {"t": concept_nospace, "t_like": f"%{concept_nospace}%"}
+                            ).fetchone()
+                            if val_res:
+                                is_matched = True
+                except Exception as e:
+                    print(f"SQLite relevance check failed for '{concept}': {e}")
+            
+            # 3. Check Vector DB
+            if not is_matched:
+                try:
+                    vector_results = self.vector.search(concept, n_results=3)
+                    if vector_results and 'metadatas' in vector_results and vector_results['metadatas']:
+                        for meta in vector_results['metadatas'][0]:
+                            if meta.get('type') == 'table' and meta.get('name', '').lower() == concept.lower():
+                                is_matched = True
+                                break
+                            elif meta.get('type') == 'column' and meta.get('name', '').lower() == concept.lower():
+                                is_matched = True
+                                break
+                            elif meta.get('type') == 'value' and meta.get('value', '').lower() == concept.lower():
+                                is_matched = True
+                                break
+                except Exception as e:
+                    print(f"Vector relevance check failed for '{concept}': {e}")
+                    
+            if is_matched:
+                matched.append(concept)
+            else:
+                unmatched.append(concept)
+                
+        score = len(matched) / len(unique_concepts)
+        return score, matched, unmatched
+
     def retrieve_context(self, intent: Dict[str, Any]) -> tuple[str, list]:
         """
         Retrieves schema context and returns (context_string, mappings_list).

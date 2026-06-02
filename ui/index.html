@@ -46,6 +46,50 @@
             color: #1e90ff;
             border: 1px solid rgba(30, 144, 255, 0.25);
         }
+        
+        /* Graceful Error Display Card */
+        .error-card {
+            background: rgba(239, 68, 68, 0.08) !important;
+            border: 1px solid rgba(239, 68, 68, 0.25) !important;
+            box-shadow: 0 8px 32px rgba(239, 68, 68, 0.15) !important;
+            padding: 1.5rem;
+            margin-top: 1rem;
+            margin-bottom: 2rem;
+            animation: slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .error-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .error-icon {
+            font-size: 1.5rem;
+            animation: pulseWarning 2s infinite;
+        }
+        .error-card h3 {
+            color: #ef4444 !important;
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-transform: none;
+            letter-spacing: normal;
+        }
+        .error-text {
+            color: #fca5a5;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            font-weight: 300;
+        }
+        
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulseWarning {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
     </style>
 </head>
 
@@ -78,6 +122,15 @@
         <div id="loader" class="loader-container hidden">
             <div class="quantum-spinner"></div>
             <p>Reasoning across schema & values...</p>
+        </div>
+
+        <!-- Graceful Error Card -->
+        <div id="errorCard" class="card error-card hidden">
+            <div class="error-header">
+                <span class="error-icon">⚠️</span>
+                <h3>Database Relevance Rejection</h3>
+            </div>
+            <p id="errorMessage" class="error-text"></p>
         </div>
 
         <div id="results" class="results-layout hidden">
@@ -126,6 +179,8 @@
         const queryInput = document.getElementById('queryInput');
         const loader = document.getElementById('loader');
         const results = document.getElementById('results');
+        const errorCard = document.getElementById('errorCard');
+        const errorMessage = document.getElementById('errorMessage');
 
         searchBtn.addEventListener('click', async () => {
             const query = queryInput.value.trim();
@@ -133,6 +188,7 @@
 
             loader.classList.remove('hidden');
             results.classList.add('hidden');
+            errorCard.classList.add('hidden');
 
             try {
                 const response = await fetch('/api/query', {
@@ -197,7 +253,8 @@
 
                 results.classList.remove('hidden');
             } catch (error) {
-                alert('Analysis Error: ' + error.message);
+                errorMessage.textContent = error.message;
+                errorCard.classList.remove('hidden');
             } finally {
                 loader.classList.add('hidden');
             }
