@@ -135,14 +135,47 @@ class CapabilityValidator:
         query is executable against the current database.
         """
         concepts = self._extract_concepts(intent)
-        if not concepts:
-            # No extractable concepts → pass through (let relevance check handle it)
-            return ValidationResult(accepted=True, verdicts=[])
-
+        
         verdicts: List[ConceptVerdict] = []
+        
+        # 1. Classify standard concepts (Entities, Metrics, Dimensions, Filter LHS)
         for concept in concepts:
             verdict = self._classify_concept(concept, intent)
             verdicts.append(verdict)
+
+        # 2. Check filter values (RHS) for domain validity
+        filters = intent.get("filters", [])
+        if isinstance(filters, str):
+            filters = [filters]
+        elif not isinstance(filters, list):
+            filters = []
+
+        # Operators that perform pattern matching or range/non-equality lookups where
+        # checking direct value presence in meta_values is not applicable.
+        pattern_operators = {
+            "starts with", "ends with", "containing", "contains",
+            "like", "ilike", "not like", "between",
+            "greater than", "less than", "greater than or equal to", "less than or equal to",
+            ">", "<", ">=", "<="
+        }
+
+        for item in filters:
+            if not item:
+                continue
+            lhs, rhs, op = self._parse_filter_lhs_rhs(str(item))
+            if lhs and rhs and op:
+                if op in pattern_operators:
+                    # Bypass value check for pattern/range operators
+                    continue
+                is_valid, evidence = self._validate_filter_value(lhs, rhs)
+                if not is_valid:
+                    verdicts.append(
+                        ConceptVerdict(
+                            concept=item,
+                            status=ConceptStatus.UNRESOLVABLE,
+                            evidence=evidence
+                        )
+                    )
 
         unresolvable = [v for v in verdicts if v.status == ConceptStatus.UNRESOLVABLE]
 
@@ -175,6 +208,115 @@ class CapabilityValidator:
     # Concept extraction
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _parse_filter_lhs_rhs(self, filter_str: str) -> Tuple[str, Optional[str], Optional[str]]:
+        """
+        Splits a filter expression into LHS (field name), RHS (value), and the matched operator.
+        Returns (LHS, RHS, operator) if an operator is matched, or (filter_str, None, None) otherwise.
+        """
+        # Word-based operators (require word boundaries)
+        word_ops = [
+            "greater than or equal to", "less than or equal to", "not equal to", "equal to",
+            "greater than", "less than", "starts with", "ends with", "containing", "contains",
+            "not like", "is not", "not in", "after", "before", "equals", "equal", "like", "ilike",
+            "between", "is", "in"
+        ]
+        # Symbolic operators
+        symbol_ops = ["!=", "<>", ">=", "<=", "=", ">", "<"]
+
+        # Build combined regex matching operators in order of length/specificity
+        word_patterns = [r"\b" + re.escape(op) + r"\b" for op in word_ops]
+        symbol_patterns = [re.escape(op) for op in symbol_ops]
+        pattern_str = "|".join(word_patterns + symbol_patterns)
+        operator_regex = re.compile(pattern_str, re.IGNORECASE)
+
+        match = operator_regex.search(filter_str)
+        if match:
+            operator_start = match.start()
+            operator_end = match.end()
+            lhs = filter_str[:operator_start].strip()
+            rhs = filter_str[operator_end:].strip()
+            op = match.group(0).lower()
+            return lhs, rhs, op
+        
+        return filter_str, None, None
+
+    def _validate_filter_value(self, lhs_field: str, rhs_value: str) -> Tuple[bool, str]:
+        """
+        Validates if the RHS filter value is valid for the LHS field.
+        Returns (is_valid, evidence).
+        """
+        # 1. Skip numeric-like, date-like, and pattern-like values (e.g. "10", "19.99", "2023-01-01")
+        if not rhs_value or re.fullmatch(r"[\d\s\-\/\.\,\:\+]+", rhs_value):
+            return True, "Value is numeric/date/pattern, bypassing check."
+        
+        # Strip quotes if any
+        val_clean = rhs_value.strip("'\"")
+        val_normalized = "".join(val_clean.split()).lower()
+
+        # 2. Find the mapped columns for the LHS field in the schema
+        lhs_normalized = "".join(lhs_field.split()).lower()
+        mapped_columns = []
+
+        try:
+            with self.engine.connect() as conn:
+                # Find column exactly or fuzzy
+                rows = conn.execute(
+                    text(
+                        "SELECT table_name, name FROM meta_columns "
+                        "WHERE replace(LOWER(name),' ','') = :n "
+                        "   OR replace(LOWER(name),' ','') LIKE :nlike"
+                    ),
+                    {"n": lhs_normalized, "nlike": f"%{lhs_normalized}%"},
+                ).fetchall()
+                for r in rows:
+                    mapped_columns.append((r[0], r[1]))
+        except Exception as e:
+            print(f"[CapabilityValidator] Failed to find columns for LHS '{lhs_field}': {e}")
+
+        if not mapped_columns:
+            # LHS itself is not matched, let LHS validation handle the rejection
+            return True, "LHS column not found; skipping value validation."
+
+        # 3. Check value against mapped columns in meta_values
+        try:
+            with self.engine.connect() as conn:
+                for tbl, col in mapped_columns:
+                    # Check if the value exists in meta_values for this column
+                    row = conn.execute(
+                        text(
+                            "SELECT 1 FROM meta_values "
+                            "WHERE table_name = :t AND column_name = :c "
+                            "AND (replace(LOWER(value),' ','') = :v "
+                            "     OR replace(LOWER(value),' ','') LIKE :vlike) "
+                            "LIMIT 1"
+                        ),
+                        {"t": tbl, "c": col, "v": val_normalized, "vlike": f"%{val_normalized}%"},
+                    ).fetchone()
+                    
+                    if row:
+                        return True, f"Value found in meta_values for {tbl}.{col}."
+
+                    # Check the cardinality of this column in meta_values
+                    card_row = conn.execute(
+                        text(
+                            "SELECT COUNT(*) FROM meta_values "
+                            "WHERE table_name = :t AND column_name = :c"
+                        ),
+                        {"t": tbl, "c": col},
+                    ).fetchone()
+                    cardinality = card_row[0] if card_row else 0
+
+                    if cardinality >= 100:
+                        # High cardinality; bypass to prevent false rejections
+                        return True, f"Column {tbl}.{col} has high cardinality (>= 100 values); bypassing check."
+                    
+        except Exception as e:
+            print(f"[CapabilityValidator] Value check failed: {e}")
+            return True, "Error checking values, bypassing check."
+
+        # If none contained the value and all had < 100 values
+        return False, f"Value '{val_clean}' was not found in the unique values for column(s): {', '.join([f'{t}.{c}' for t, c in mapped_columns])}."
+
     def _extract_concepts(self, intent: Dict[str, Any]) -> List[str]:
         """
         Pull all candidate concepts from the intent dict, deduplicate, and
@@ -184,9 +326,19 @@ class CapabilityValidator:
         for key in ("entities", "metrics", "filters", "dimensions"):
             val = intent.get(key, [])
             if isinstance(val, list):
-                raw.extend([str(v).strip() for v in val if v])
+                items = [str(v).strip() for v in val if v]
             elif isinstance(val, str) and val.strip():
-                raw.append(val.strip())
+                items = [val.strip()]
+            else:
+                items = []
+
+            if key == "filters":
+                for item in items:
+                    lhs, _, _ = self._parse_filter_lhs_rhs(item)
+                    if lhs:
+                        raw.append(lhs)
+            else:
+                raw.extend(items)
 
         seen: set = set()
         cleaned: List[str] = []

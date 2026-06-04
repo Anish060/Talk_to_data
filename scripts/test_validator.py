@@ -25,7 +25,8 @@ test_queries = [
     "Show customer names and order dates",
     "Show discounted revenue by customer",
     "Show products bought today",
-    "Show customer favorite shoe color"
+    "Show customer favorite shoe color",
+    "Show customers who purchased Tesla Model Y"
 ]
 
 print("==================================================")

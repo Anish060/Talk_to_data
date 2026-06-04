@@ -267,7 +267,7 @@ The extraction is performed using the \textbf{SchemaExtractor} engine:
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.8\textwidth]{Talk_to_Data_archF.png}
-    \caption{System Architecture}
+    \caption{System Architecture latest}
     \label{fig:architecture}
 \end{figure}
 \section{Domain Ontology Layer}
@@ -849,6 +849,18 @@ The fusion of:
     \item Agentic planning
 \end{itemize}
 
-creates a highly extensible foundation for next-generation enterprise data intelligence systems.
+% Recent Enhancements
+\section{Recent Enhancements}
+\subsection{UI Redesign}
+Implemented a premium black-and-white theme with modern typography, glassmorphism cards, fluid animated SVG background, and micro‑animations. Added quick‑start suggestion cards that populate the query input. Updated static asset links with cache‑busting parameter \texttt{?v=6.0}.
+
+\subsection{Capability Validation Layer}
+Introduced a three‑tier validation layer in \texttt{capability_validator.py}:
+\begin{enumerate}
+    \item \textbf{Catalogue Validation}: Checks query fields against the business catalogue.
+    \item \textbf{Schema Validation}: Verifies column existence and data types using the Info DB metadata.
+    \item \textbf{Ontology Grounding}: Ensures semantic consistency with the domain ontology.
+\end{enumerate}
+This layer resolves previous data relevance bugs and prevents hallucinated columns in generated SQL.
 
 \end{document}
