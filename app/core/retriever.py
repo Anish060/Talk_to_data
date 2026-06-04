@@ -144,7 +144,7 @@ class ContextRetriever:
 
     def check_relevance(self, intent: Dict[str, Any]) -> tuple[float, list[str], list[str]]:
         """
-        Check query relevance against the database schema and values.
+        Check query relevance against the database schema, values, and business concepts.
         Returns a tuple: (relevance_score, matched_concepts, unmatched_concepts)
         """
         concepts = []
@@ -165,26 +165,101 @@ class ContextRetriever:
         matched = []
         unmatched = []
         
+        # 1. Load client documentation rules & trigger phrases
+        from app.state import get_catalogue, USE_CLIENT_DOC
+        trigger_phrases = set()
+        if USE_CLIENT_DOC:
+            catalogue = get_catalogue()
+            if catalogue and "rules" in catalogue:
+                for rule in catalogue["rules"]:
+                    for phrase in rule.get("trigger_phrases", []):
+                        trigger_phrases.add(phrase.lower())
+                        
+        # 2. Common Analytical / SQL keywords to avoid penalizing math operations
+        ANALYTICAL_KEYWORDS = {
+            "percentage", "percent", "contribution", "share", "proportion", "ratio", "rate",
+            "total", "sum", "average", "avg", "count", "number of", "distinct",
+            "by", "each", "per", "group by", "sort by", "order by", "top", "limit",
+            "increase", "decrease", "growth", "trend", "change", "diff", "difference",
+            "monthly", "yearly", "quarterly", "daily", "annual", "ranking", "rank"
+        }
+        
+        # Helper to check if a single word matches schema objects directly
+        def is_word_in_schema(word: str) -> bool:
+            word_nospace = "".join(word.split()).lower()
+            if not word_nospace:
+                return False
+            # Check analytical keywords
+            if word_nospace in ANALYTICAL_KEYWORDS:
+                return True
+            # Check SQLite tables & columns
+            try:
+                with self.engine.connect() as conn:
+                    tbl_res = conn.execute(
+                        text("SELECT name FROM meta_tables WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
+                        {"t": word_nospace}
+                    ).fetchone()
+                    if tbl_res:
+                        return True
+                    col_res = conn.execute(
+                        text("SELECT name FROM meta_columns WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
+                        {"t": word_nospace}
+                    ).fetchone()
+                    if col_res:
+                        return True
+            except Exception:
+                pass
+            # Check Neo4j nodes (Table, Column, Concept, Synonym)
+            try:
+                neo4j_res = self.graph.query(
+                    """
+                    MATCH (n)
+                    WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym)
+                      AND replace(toLower(n.name), ' ', '') = replace(toLower($name), ' ', '')
+                    RETURN n.name LIMIT 1
+                    """,
+                    {"name": word}
+                )
+                if neo4j_res:
+                    return True
+            except Exception:
+                pass
+            return False
+            
         for concept in unique_concepts:
+            concept_lower = concept.lower()
             is_matched = False
             
-            # 1. Check Neo4j Synonyms
-            try:
-                synonym_matches = self.graph.query(
-                    """
-                    MATCH (s:Synonym)
-                    WHERE replace(toLower(s.name), ' ', '') = replace(toLower($name), ' ', '')
-                    MATCH (s)-[:IS_SYNONYM_FOR]->(con:Concept)-[:MAPS_TO]->(t:Table)
-                    RETURN t.name as table_name LIMIT 1
-                    """,
-                    {"name": concept}
-                )
-                if synonym_matches:
-                    is_matched = True
-            except Exception as e:
-                print(f"Neo4j relevance check failed for '{concept}': {e}")
+            # Case A: Check direct matches in analytical keywords
+            if concept_lower in ANALYTICAL_KEYWORDS:
+                is_matched = True
                 
-            # 2. Check SQLite Metadata (tables, columns, exact/fuzzy values)
+            # Case B: Check client documentation trigger phrases
+            if not is_matched and trigger_phrases:
+                for phrase in trigger_phrases:
+                    # Exact match or substring match
+                    if concept_lower == phrase or concept_lower in phrase or phrase in concept_lower:
+                        is_matched = True
+                        break
+                        
+            # Case C: Check Neo4j (Tables, Columns, Concepts, Synonyms)
+            if not is_matched:
+                try:
+                    neo4j_res = self.graph.query(
+                        """
+                        MATCH (n)
+                        WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym)
+                          AND replace(toLower(n.name), ' ', '') = replace(toLower($name), ' ', '')
+                        RETURN n.name LIMIT 1
+                        """,
+                        {"name": concept}
+                    )
+                    if neo4j_res:
+                        is_matched = True
+                except Exception as e:
+                    print(f"Neo4j relevance check failed for '{concept}': {e}")
+                    
+            # Case D: Check SQLite Metadata (tables, columns, exact/fuzzy values)
             if not is_matched:
                 concept_nospace = "".join(concept.split()).lower()
                 try:
@@ -217,30 +292,31 @@ class ContextRetriever:
                 except Exception as e:
                     print(f"SQLite relevance check failed for '{concept}': {e}")
             
-            # 3. Check Vector DB
+            # Case E: Check Vector DB with flexible name comparison
             if not is_matched:
                 try:
-                    vector_results = self.vector.search(concept, n_results=3)
+                    vector_results = self.vector.search(concept, n_results=5)
                     if vector_results and 'metadatas' in vector_results and vector_results['metadatas']:
                         for meta in vector_results['metadatas'][0]:
-                            if meta.get('type') == 'table' and meta.get('name', '').lower() == concept.lower():
-                                is_matched = True
-                                break
-                            elif meta.get('type') == 'column' and meta.get('name', '').lower() == concept.lower():
-                                is_matched = True
-                                break
-                            elif meta.get('type') == 'value' and meta.get('value', '').lower() == concept.lower():
+                            meta_name = (meta.get('name') or meta.get('value') or '').lower()
+                            if meta_name and (meta_name in concept_lower or concept_lower in meta_name):
                                 is_matched = True
                                 break
                 except Exception as e:
                     print(f"Vector relevance check failed for '{concept}': {e}")
+            
+            # Case F: Multi-word decomposition fallback
+            if not is_matched and " " in concept_lower:
+                words = [w.strip() for w in concept_lower.split() if w.strip()]
+                if words and all(is_word_in_schema(w) for w in words):
+                    is_matched = True
                     
             if is_matched:
                 matched.append(concept)
             else:
                 unmatched.append(concept)
                 
-        score = len(matched) / len(unique_concepts)
+        score = len(matched) / len(unique_concepts) if unique_concepts else 0.0
         return score, matched, unmatched
 
     def retrieve_context(self, intent: Dict[str, Any]) -> tuple[str, list]:

@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: retrival_neo4j
+    ports:
+      - "7474:7474"   # HTTP API
+      - "7687:7687"   # Bolt protocol
+    environment:
+      - NEO4J_AUTH=neo4j/12345678   # username/password (matches .env)
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7474"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: retrival_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: retrival_app
+    ports:
+      - "8000:8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=sqlite:///data/northwind.sqlite
+      - NEO4J_URI=neo4j://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=12345678
+      - NEO4J_DATABASE=t01
+      - CHROMA_PATH=/app/data/chroma
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  redis_data:

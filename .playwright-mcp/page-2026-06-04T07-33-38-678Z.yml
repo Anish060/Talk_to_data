@@ -1,0 +1,9 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - heading "Talk to Data" [level=1] [ref=e5]
+    - paragraph [ref=e6]: Natural Language · SQL · Results
+  - generic [ref=e8]:
+    - textbox "Ask anything — e.g. top 10 customers by revenue in London" [ref=e9]
+    - button "Run" [ref=e10] [cursor=pointer]:
+      - generic [ref=e11]: Run
+      - img [ref=e12]

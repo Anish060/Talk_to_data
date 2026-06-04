@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from app.core.intent_extractor import IntentExtractor
 from app.core.retriever import ContextRetriever
 from app.core.generator import SQLGenerator
+from app.core.capability_validator import CapabilityValidator
 from app.utils.llm import LLMClient
 from app.db.neo4j_client import Neo4jClient
 from app.db.vector_client import VectorClient
@@ -92,20 +93,20 @@ async def process_query(request: QueryRequest, http_request: Request):
         intent = intent_ext.extract(request.query)
         print(f"Extracted intent: {intent}")
         
-        # 2. Schema Relevance Check
-        retriever = ContextRetriever(neo4j, vector)
-        relevance_score, matched, unmatched = retriever.check_relevance(intent)
-        print(f"Relevance Score: {relevance_score:.2f} (Matched: {matched}, Unmatched: {unmatched})")
+        # 2. Schema Capability Check
+        validator = CapabilityValidator(neo4j_client=neo4j, info_db_path="data/info.db")
+        val_result = validator.validate(intent)
+        print(f"Capability Validation Result: accepted={val_result.accepted}")
+        print(validator.explain(val_result))
         
-        if relevance_score < 0.7:
+        if not val_result.accepted:
             raise HTTPException(
                 status_code=400,
-                detail=f"Query rejected due to low database relevance ({relevance_score*100:.1f}%). "
-                       f"Matched: {', '.join(matched) or 'None'}. "
-                       f"Unmatched: {', '.join(unmatched) or 'None'}."
+                detail=val_result.rejection_reason
             )
         
         # 3. Context
+        retriever = ContextRetriever(neo4j, vector)
         context, grounding = retriever.retrieve_context(intent)
         print("Retrieved context.")
         

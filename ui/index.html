@@ -5,104 +5,138 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Talk to Data</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Fira+Code&display=swap"
+    <link rel="stylesheet" href="/static/style.css?v=6.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code&display=swap"
         rel="stylesheet">
     <!-- Prism.js for syntax highlighting -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
     <style>
         .badge-container {
-    display: inline-flex;
-    justify-content: flex-start;
-    align-items: center;
-    margin-bottom: 0.5rem;
-    grid-column: 1 / -1; /* span full width of results grid */
-}
-.badge-container:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-}
+            display: inline-flex;
+            justify-content: flex-start;
+            align-items: center;
+            margin-bottom: 1rem;
+            grid-column: 1 / -1;
+        }
+
+        .badge-container:hover {
+            transform: translateY(-1px);
+        }
+
         .cache-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    transition: all 0.3s ease;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-    font-family: 'Outfit', sans-serif;
-}
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            letter-spacing: 0.01em;
+            transition: all 0.2s ease;
+            font-family: var(--font-sans);
+            border: 1px solid var(--border-color);
+            background: #ffffff;
+            color: var(--text-main);
+            box-shadow: var(--card-shadow);
+        }
+
         .cache-badge.cached {
-            background: rgba(46, 213, 115, 0.12);
-            color: #2ed573;
-            border: 1px solid rgba(46, 213, 115, 0.25);
-            box-shadow: 0 0 12px rgba(46, 213, 115, 0.15);
+            background: #f4f4f5;
+            color: #09090b;
+            border-color: var(--border-hover);
         }
+
         .cache-badge.realtime {
-            background: rgba(30, 144, 255, 0.12);
-            color: #1e90ff;
-            border: 1px solid rgba(30, 144, 255, 0.25);
+            background: #ffffff;
+            color: var(--text-dim);
+            border-color: var(--border-color);
         }
-        
+
         /* Graceful Error Display Card */
         .error-card {
-            background: rgba(239, 68, 68, 0.08) !important;
-            border: 1px solid rgba(239, 68, 68, 0.25) !important;
-            box-shadow: 0 8px 32px rgba(239, 68, 68, 0.15) !important;
+            background: #fef2f2 !important;
+            border: 1px solid #fee2e2 !important;
+            box-shadow: var(--card-shadow) !important;
             padding: 1.5rem;
             margin-top: 1rem;
             margin-bottom: 2rem;
             animation: slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         }
+
         .error-header {
             display: flex;
             align-items: center;
             gap: 0.75rem;
             margin-bottom: 0.75rem;
         }
+
         .error-icon {
-            font-size: 1.5rem;
-            animation: pulseWarning 2s infinite;
+            font-size: 1.2rem;
         }
+
         .error-card h3 {
             color: #ef4444 !important;
             margin: 0;
-            font-size: 1.1rem;
+            font-size: 1rem;
             font-weight: 600;
             text-transform: none;
             letter-spacing: normal;
         }
+
         .error-text {
-            color: #fca5a5;
-            font-size: 0.95rem;
+            color: #991b1b;
+            font-size: 0.85rem;
             line-height: 1.5;
-            font-weight: 300;
+            font-weight: 400;
         }
-        
+
         @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes pulseWarning {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.1); }
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
     </style>
 </head>
 
 <body>
-    <div class="glass-bg"></div>
+    <div class="glass-bg">
+        <svg class="sweeping-waves" viewBox="0 0 1440 800" preserveAspectRatio="none" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="waveGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="rgba(244, 244, 245, 0.4)" />
+                    <stop offset="50%" stop-color="rgba(228, 228, 231, 0.5)" />
+                    <stop offset="100%" stop-color="rgba(255, 255, 255, 0.9)" />
+                </linearGradient>
+                <linearGradient id="waveGrad2" x1="100%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stop-color="rgba(255, 255, 255, 0)" />
+                    <stop offset="70%" stop-color="rgba(244, 244, 245, 0.6)" />
+                    <stop offset="100%" stop-color="rgba(212, 212, 216, 0.3)" />
+                </linearGradient>
+                <linearGradient id="waveGrad3" x1="0%" y1="100%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="rgba(244, 244, 245, 0.3)" />
+                    <stop offset="50%" stop-color="rgba(228, 228, 231, 0.4)" />
+                    <stop offset="100%" stop-color="rgba(255, 255, 255, 0)" />
+                </linearGradient>
+            </defs>
+            <path class="wave wave-back" d="M0,320 C320,400 480,200 800,280 C1120,360 1280,180 1440,240 L1440,800 L0,800 Z" fill="url(#waveGrad1)" />
+            <path class="wave wave-mid" d="M0,450 C240,320 560,500 880,380 C1200,260 1360,420 1440,480 L1440,800 L0,800 Z" fill="url(#waveGrad2)" />
+            <path class="wave wave-front" d="M0,580 C360,480 720,680 1080,560 C1260,500 1380,620 1440,650 L1440,800 L0,800 Z" fill="url(#waveGrad3)" />
+        </svg>
+        <div class="ambient-glow"></div>
+    </div>
 
     <div class="container">
         <header>
             <div class="logo-container">
                 <div class="logo-icon"></div>
-                <h1>Talk to data</h1>
+                <h1>talk to data</h1>
             </div>
-            <p class="subtitle">Enterprise Intelligence via Natural Language</p>
+            <p class="subtitle">Into the unknown of your database</p>
         </header>
 
         <div class="query-area">
@@ -116,6 +150,18 @@
                             d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
                     </svg>
                 </button>
+            </div>
+
+            <!-- Quick Start Suggestion Cards (DeepSeek inspired) -->
+            <div class="suggestions-container" id="suggestionsContainer">
+                <div class="suggestion-card" onclick="setQuery('Show each product category\'s contribution to total revenue as a percentage.')">
+                    <div class="s-title">Analyze Revenue</div>
+                    <div class="s-desc">Show category contributions to sales as a percentage.</div>
+                </div>
+                <div class="suggestion-card" onclick="setQuery('Show the customer that has placed the highest number of orders.')">
+                    <div class="s-title">Top Customers</div>
+                    <div class="s-desc">Find the most active customers inside the system.</div>
+                </div>
             </div>
         </div>
 
@@ -287,6 +333,11 @@
             const sql = document.getElementById('sqlDisplay').textContent;
             navigator.clipboard.writeText(sql);
             alert('SQL copied to clipboard');
+        }
+
+        function setQuery(text) {
+            queryInput.value = text;
+            queryInput.focus();
         }
 
         queryInput.addEventListener('keypress', (e) => {
