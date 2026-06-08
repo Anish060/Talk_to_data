@@ -94,7 +94,7 @@ async def process_query(request: QueryRequest, http_request: Request):
         print(f"Extracted intent: {intent}")
         
         # 2. Schema Capability Check
-        validator = CapabilityValidator(neo4j_client=neo4j, info_db_path="data/info.db")
+        validator = CapabilityValidator(neo4j_client=neo4j, vector_client=vector, info_db_path="data/info.db")
         val_result = validator.validate(intent)
         print(f"Capability Validation Result: accepted={val_result.accepted}")
         print(validator.explain(val_result))
