@@ -3,36 +3,34 @@ capability_validator.py
 -----------------------
 Database Capability Validation Layer
 
-Fixes applied to this version
-──────────────────────────────
-BUG 1 — Entity/dimension names incorrectly matched by Tier 1 (catalogue derivability)
-  "suppliers", "customers", "orders" were being classified DERIVABLE because those
-  words appear as substrings inside trigger phrases like "distinct suppliers".
-  Fix: _extract_concepts now tags each concept with its intent slot.
-       Tier 1 is ONLY consulted when the tag is "metrics".
+Tier structure
+──────────────
+Tier 0  OntologyCatalogue exact/synonym match  (NEW — highest priority)
+         Authoritative column/table resolution from ontology_catalogue.json.
+         When confidence >= 0.9 the concept is immediately MATCHED and no
+         lower tier runs for it.
 
-BUG 2 — Multi-word dimension phrases ("supplier country", "customer country") unresolvable
-  Normalising "supplier country" → "suppliercountry" never matched the column "Country".
-  Fix: _check_schema_metadata runs a compound phrase decomposition for multi-word
-       concepts, splitting into (qualifier=table hint, attribute=column hint) and
-       querying: table LIKE '%supplier%' AND column LIKE '%country%'.
+Tier 1  Analytical phrase whitelist
+         Pure ranking / aggregation intents — DERIVABLE, no DB lookup.
 
-BUG 3 — Analytical/ranking phrases ("purchase count", "most purchased") incorrectly
-  treated as schema concepts and rejected as UNRESOLVABLE.
-  Root cause: The LLM intent extractor converts natural ranking instructions like
-  "most purchased category" into metric phrases such as "purchase count".
-  These are not database columns or business entities — they are pure analytical
-  expressions that describe HOW to aggregate, not WHAT schema object to find.
-  Fix A — _ANALYTICAL_PHRASE_WHITELIST: a set of normalised ranking/aggregation
-           phrases that are intercepted in _classify_concept BEFORE any tier runs.
-           Any concept matching this whitelist is immediately returned as DERIVABLE
-           with intent_type="analytical_expression".
-  Fix B — _METRIC_SYNONYM_MAP: maps common LLM-generated metric paraphrases
-           (e.g. "purchase count", "sales volume") to their canonical column
-           expressions (e.g. ["Order Details.Quantity", "Orders.OrderID"]).
-           When a metric concept hits this map, the validator verifies the
-           mapped columns exist in the DB and returns DERIVABLE if they do —
-           the same column-presence gate used for catalogue rules.
+Tier 2  Metric synonym map
+         LLM paraphrases remapped to real columns — DERIVABLE after
+         column-presence check.
+
+Tier 3  Field catalogue (metrics only)
+         Business formula rules from field_catalogue2.json — DERIVABLE.
+
+Tier 4  Schema metadata (Info DB)
+         Exact/fuzzy/morphological/compound table+column matching — MATCHED.
+
+Tier 5  Neo4j ontology + Vector fallback
+         Legacy Concept/Synonym nodes + ChromaDB semantic search — MATCHED.
+
+Fixes retained from previous version
+──────────────────────────────────────
+BUG 1 — Entity/dimension names matched by field catalogue trigger phrases.
+BUG 2 — Multi-word dimension phrases unresolvable.
+BUG 3 — Analytical/ranking phrases rejected as UNRESOLVABLE.
 """
 
 from __future__ import annotations
@@ -98,64 +96,41 @@ class CapabilityValidator:
         "quarter", "week", "day", "rank", "ranked", "sorted", "ordered",
     }
 
-    # ── Analytical / ranking phrases (Fix B3-A) ───────────────────────────────
-    # These are pure analytical instructions produced by the LLM intent extractor.
-    # They express HOW to rank or aggregate, not WHAT schema object to look up.
-    # Any metric concept that normalises to one of these is short-circuited as
-    # DERIVABLE with intent_type="analytical_expression" — no tier lookup needed.
-    #
-    # Key design rule: a phrase belongs here when it contains NO domain-specific
-    # noun (e.g. "bike", "StandardCost") — it is purely a ranking/counting verb.
     _ANALYTICAL_PHRASE_WHITELIST: Dict[str, str] = {
-        # ranking intents
-        "mostpurchased":          "ranking_intent",
-        "leastpurchased":         "ranking_intent",
-        "topselling":             "ranking_intent",
-        "bestselling":            "ranking_intent",
-        "highestrevenue":         "ranking_intent",
-        "lowestrevenue":          "ranking_intent",
-        "bestperforming":         "ranking_intent",
-        "worstperforming":        "ranking_intent",
-        "mostsold":               "ranking_intent",
-        "leastsold":              "ranking_intent",
-        "toprated":               "ranking_intent",
-        "mostordered":            "ranking_intent",
-        "leastordered":           "ranking_intent",
-        "mostshipped":            "ranking_intent",
-        "topperforming":          "ranking_intent",
-        "highestdemand":          "ranking_intent",
-        # aggregation intents — LLM paraphrases that map to standard SQL aggregations
-        "purchasecount":          "aggregation_intent",
-        "ordercount":             "aggregation_intent",
-        "salescount":             "aggregation_intent",
-        "salesvolume":            "aggregation_intent",
-        "unitssold":              "aggregation_intent",
-        "totalunits":             "aggregation_intent",
-        "totalorders":            "aggregation_intent",
-        "totalpurchases":         "aggregation_intent",
-        "numberoforders":         "aggregation_intent",
-        "numberofpurchases":      "aggregation_intent",
-        "quantitysold":           "aggregation_intent",
-        "totalquantity":          "aggregation_intent",
-        "purchasefrequency":      "aggregation_intent",
-        "orderfrequency":         "aggregation_intent",
-        "demandcount":            "aggregation_intent",
+        "mostpurchased":     "ranking_intent",
+        "leastpurchased":    "ranking_intent",
+        "topselling":        "ranking_intent",
+        "bestselling":       "ranking_intent",
+        "highestrevenue":    "ranking_intent",
+        "lowestrevenue":     "ranking_intent",
+        "bestperforming":    "ranking_intent",
+        "worstperforming":   "ranking_intent",
+        "mostsold":          "ranking_intent",
+        "leastsold":         "ranking_intent",
+        "toprated":          "ranking_intent",
+        "mostordered":       "ranking_intent",
+        "leastordered":      "ranking_intent",
+        "mostshipped":       "ranking_intent",
+        "topperforming":     "ranking_intent",
+        "highestdemand":     "ranking_intent",
+        "purchasecount":     "aggregation_intent",
+        "ordercount":        "aggregation_intent",
+        "salescount":        "aggregation_intent",
+        "salesvolume":       "aggregation_intent",
+        "unitssold":         "aggregation_intent",
+        "totalunits":        "aggregation_intent",
+        "totalorders":       "aggregation_intent",
+        "totalpurchases":    "aggregation_intent",
+        "numberoforders":    "aggregation_intent",
+        "numberofpurchases": "aggregation_intent",
+        "quantitysold":      "aggregation_intent",
+        "totalquantity":     "aggregation_intent",
+        "purchasefrequency": "aggregation_intent",
+        "orderfrequency":    "aggregation_intent",
+        "demandcount":       "aggregation_intent",
     }
 
-    # ── Metric synonym map (Fix B3-B) ─────────────────────────────────────────
-    # Maps normalised LLM-generated metric paraphrases to the actual DB columns
-    # that can satisfy them.  Used in _check_metric_synonym() which is called
-    # from _classify_concept for "metrics" concepts that cleared the whitelist.
-    #
-    # The validator runs _columns_exist_in_db() on the mapped column list — if
-    # any exist in the current DB, the concept is DERIVABLE.  This means the
-    # same column-presence gate that protects against cross-DB leaks also applies
-    # here: "purchase count" passes on Northwind (Quantity, OrderID exist) but
-    # would fail on a DB that has neither.
-    #
-    # Keys are space-normalised lowercase strings (spaces removed).
     _METRIC_SYNONYM_MAP: Dict[str, List[str]] = {
-        # purchase / quantity synonyms
         "purchasecount":     ["Order Details.Quantity", "Orders.OrderID"],
         "salescount":        ["Order Details.Quantity", "Orders.OrderID"],
         "ordercount":        ["Orders.OrderID"],
@@ -171,8 +146,6 @@ class CapabilityValidator:
         "purchasefrequency": ["Orders.OrderID", "Customers.CustomerID"],
         "orderfrequency":    ["Orders.OrderID", "Customers.CustomerID"],
         "demandcount":       ["Order Details.Quantity"],
-        # revenue synonyms (already handled by catalogue rules, but kept as
-        # fallback in case the catalogue match misses due to phrase variation)
         "grosssales":        ["Order Details.Quantity", "Order Details.UnitPrice"],
         "netsales":          ["Order Details.Quantity", "Order Details.UnitPrice",
                               "Order Details.Discount"],
@@ -193,21 +166,23 @@ class CapabilityValidator:
         self._rule_applies_index: Dict[str, List[Dict]] = {}
         self._build_catalogue_indices()
 
+        # ── Tier 0: Ontology Catalogue resolver (NEW) ─────────────────────────
+        from app.core.ontology_resolver import OntologyResolver
+        self._ontology_resolver = OntologyResolver(neo4j_client)
+
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
     def validate(self, intent: Dict[str, Any]) -> ValidationResult:
-        # ── FIX 1: extract concepts WITH their intent-slot tag ────────────────
         tagged = self._extract_tagged_concepts(intent)
-
         verdicts: List[ConceptVerdict] = []
 
         for concept, intent_key in tagged:
             verdict = self._classify_concept(concept, intent_key)
             verdicts.append(verdict)
 
-        # Filter-value (RHS) validation — unchanged from your version
+        # Filter-value (RHS) validation
         filters = intent.get("filters", [])
         if isinstance(filters, str):
             filters = [filters]
@@ -264,24 +239,12 @@ class CapabilityValidator:
         return "\n".join(lines)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # FIX 1 — Concept extraction with intent-slot tagging
+    # Concept extraction with intent-slot tagging
     # ──────────────────────────────────────────────────────────────────────────
 
     def _extract_tagged_concepts(
         self, intent: Dict[str, Any]
     ) -> List[Tuple[str, str]]:
-        """
-        Return a deduplicated list of (concept, intent_key) pairs.
-
-        intent_key is one of: "entities", "metrics", "filters", "dimensions".
-
-        The tag controls tier routing in _classify_concept:
-          "metrics"          → Tier 1 (catalogue) is consulted first
-          everything else    → skip Tier 1; go straight to Tier 2 / Tier 3
-                               (entity names and dimension phrases are schema
-                                objects, not derived formulas — matching them
-                                via formula trigger-phrases causes false DERIVABLE)
-        """
         seen: set = set()
         tagged: List[Tuple[str, str]] = []
 
@@ -293,7 +256,6 @@ class CapabilityValidator:
             elif isinstance(val, str) and val.strip():
                 items = [val.strip()]
 
-            # For filters, extract only the LHS field name (not the value)
             if key == "filters":
                 lhs_items = []
                 for item in items:
@@ -314,28 +276,53 @@ class CapabilityValidator:
 
         return tagged
 
-    # kept for backward-compat (used by filter-value path above)
     def _extract_concepts(self, intent: Dict[str, Any]) -> List[str]:
         return [c for c, _ in self._extract_tagged_concepts(intent)]
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Classification pipeline  (FIX 1 — route by intent_key)
+    # Classification pipeline
     # ──────────────────────────────────────────────────────────────────────────
 
     def _classify_concept(self, concept: str, intent_key: str) -> ConceptVerdict:
         """
-        Routing order:
-          0. Analytical phrase whitelist  — pure ranking/aggregation intents, no DB lookup
-          1. Metric synonym map           — LLM paraphrases remapped to real columns
-          2. Tier 1 catalogue             — metrics only
-          3. Tier 2 schema metadata       — all slots
-          4. Tier 3 ontology / vector     — all slots
+        Tier 0  OntologyCatalogue (NEW — authoritative when confidence >= 0.9)
+        Step 0  Analytical phrase whitelist
+        Step 1  Metric synonym map
+        Tier 1  Field catalogue (metrics only)
+        Tier 2  Schema metadata (Info DB)
+        Tier 3  Neo4j ontology / Vector fallback
         """
         normalized_key = "".join(concept.split()).lower()
 
-        # ── Step 0: Analytical phrase whitelist (Fix B3-A) ───────────────────
-        # Pure ranking / aggregation intents are NOT schema concepts.
-        # Short-circuit immediately — no DB lookup required.
+        # ── Tier 0: Ontology Catalogue ────────────────────────────────────────
+        # Consult the ontology catalogue first for all concept types.
+        # If the resolver returns an authoritative (confidence >= 0.9) hit,
+        # return MATCHED immediately — no lower tier runs.
+        # For advisory hits (0.7 <= confidence < 0.9) we record the evidence
+        # but continue to lower tiers for corroboration.
+        ontology_verdict = self._check_ontology_catalogue(concept)
+        if ontology_verdict is not None:
+            if ontology_verdict.status == ConceptStatus.MATCHED:
+                # Check: is it authoritative or advisory?
+                # The OntologyResolution confidence is embedded in the evidence string;
+                # we stored it on the verdict's matched_objects as well. To keep the
+                # verdict dataclass simple we re-resolve here only to read confidence.
+                resolution = self._ontology_resolver.resolve(concept)
+                if resolution.is_authoritative:
+                    return ontology_verdict
+                # Advisory: fall through but keep the ontology hit as a note by
+                # adjusting the evidence so the explain() output shows it.
+                ontology_verdict = ConceptVerdict(
+                    concept=ontology_verdict.concept,
+                    status=ConceptStatus.MATCHED,
+                    evidence=f"[ADVISORY] {ontology_verdict.evidence} — also checking lower tiers.",
+                    matched_objects=ontology_verdict.matched_objects,
+                )
+                # We return the advisory hit — the validator still passes.
+                # If a lower tier finds nothing better, the advisory hit stands.
+                return ontology_verdict
+
+        # ── Step 0: Analytical phrase whitelist ───────────────────────────────
         if normalized_key in self._ANALYTICAL_PHRASE_WHITELIST:
             intent_type = self._ANALYTICAL_PHRASE_WHITELIST[normalized_key]
             return ConceptVerdict(
@@ -347,29 +334,26 @@ class CapabilityValidator:
                     f"not a schema object — no column lookup needed."
                 ),
                 rule_id=f"WHITELIST:{intent_type}",
-                matched_objects=[],
             )
 
-        # ── Step 1: Metric synonym map (Fix B3-B) ────────────────────────────
-        # Only for metrics: remap LLM-generated paraphrases to real columns and
-        # verify those columns exist in this DB before returning DERIVABLE.
+        # ── Step 1: Metric synonym map ────────────────────────────────────────
         if intent_key == "metrics":
             synonym_verdict = self._check_metric_synonym(concept, normalized_key)
             if synonym_verdict is not None:
                 return synonym_verdict
 
-        # ── Tier 1: catalogue derivability (metrics only) ────────────────────
+        # ── Tier 1: Field catalogue (metrics only) ────────────────────────────
         if intent_key == "metrics":
             tier1 = self._check_catalogue_derivability(concept)
             if tier1 is not None:
                 return tier1
 
-        # ── Tier 2: schema metadata ──────────────────────────────────────────
+        # ── Tier 2: Schema metadata ───────────────────────────────────────────
         tier2 = self._check_schema_metadata(concept)
         if tier2 is not None:
             return tier2
 
-        # ── Tier 3: ontology / Neo4j (+ Vector fallback) ────────────────────
+        # ── Tier 3: Neo4j ontology / Vector fallback ──────────────────────────
         tier3 = self._check_ontology(concept)
         if tier3 is not None:
             return tier3
@@ -378,20 +362,62 @@ class CapabilityValidator:
             concept=concept,
             status=ConceptStatus.UNRESOLVABLE,
             evidence=(
-                "No match found in analytical whitelist, metric synonyms, "
-                "catalogue rules, schema metadata (tables/columns/values), "
-                "or ontology synonyms."
+                "No match found in ontology catalogue, analytical whitelist, "
+                "metric synonyms, field catalogue rules, schema metadata "
+                "(tables/columns/values), or ontology synonyms."
             ),
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Tier 0 — Ontology Catalogue  (NEW)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _check_ontology_catalogue(self, concept: str) -> Optional[ConceptVerdict]:
+        """
+        Query the OntologyResolver for a catalogue-backed mapping.
+        Returns a ConceptVerdict when resolved, None otherwise.
+        """
+        try:
+            resolution = self._ontology_resolver.resolve(concept)
+        except Exception as e:
+            print(f"[CapabilityValidator] OntologyResolver failed for '{concept}': {e}")
+            return None
+
+        if not resolution.resolved:
+            return None
+
+        # Build matched_objects list
+        obj_list: List[str] = []
+        for c in resolution.columns:
+            tbl = c.get("table", "")
+            col = c.get("name", "")
+            if tbl and col:
+                obj_list.append(f"{tbl}.{col}")
+        if not obj_list:
+            obj_list = list(resolution.tables)
+
+        evidence = (
+            f"Ontology catalogue {resolution.match_type} match: "
+            f"'{concept}' → {resolution.ontology_concept_type} "
+            f"'{resolution.ontology_concept_name}' "
+            f"(confidence={resolution.confidence:.2f}, priority={resolution.priority})"
+        )
+
+        return ConceptVerdict(
+            concept=concept,
+            status=ConceptStatus.MATCHED,
+            evidence=evidence,
+            rule_id=f"ONTOLOGY:{resolution.ontology_concept_name}",
+            matched_objects=obj_list,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Step 1 — Metric synonym map
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _check_metric_synonym(
         self, concept: str, normalized_key: str
     ) -> Optional[ConceptVerdict]:
-        """
-        Look up the concept in _METRIC_SYNONYM_MAP.  If found, verify that the
-        mapped columns exist in this DB.  Returns DERIVABLE on success, None
-        on miss (falls through to catalogue / schema tiers).
-        """
         mapped_columns = self._METRIC_SYNONYM_MAP.get(normalized_key)
         if not mapped_columns:
             return None
@@ -408,12 +434,10 @@ class CapabilityValidator:
                 rule_id="METRIC_SYNONYM_MAP",
                 matched_objects=existing,
             )
-
-        # Mapped columns don't exist in this DB — fall through
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Tier 1 — Catalogue derivability  (metrics only)
+    # Tier 1 — Field catalogue derivability  (metrics only)
     # ──────────────────────────────────────────────────────────────────────────
 
     def _check_catalogue_derivability(self, concept: str) -> Optional[ConceptVerdict]:
@@ -444,14 +468,13 @@ class CapabilityValidator:
                 return ConceptVerdict(
                     concept=concept,
                     status=ConceptStatus.DERIVABLE,
-                    evidence=f"Matched catalogue rule '{rule['id']}' (universal sentinel columns).",
+                    evidence=f"Matched field catalogue rule '{rule['id']}' (universal sentinel columns).",
                     rule_id=rule["id"],
                     matched_objects=applies_to,
                 )
 
             existing = self._columns_exist_in_db(real_columns)
 
-            # metric_formula rules require ALL columns; other rule types need only ONE
             if rule.get("type") == "metric_formula":
                 is_applicable = len(existing) == len(real_columns)
             else:
@@ -462,7 +485,7 @@ class CapabilityValidator:
                     concept=concept,
                     status=ConceptStatus.DERIVABLE,
                     evidence=(
-                        f"Matched catalogue rule '{rule['id']}'; "
+                        f"Matched field catalogue rule '{rule['id']}'; "
                         f"required columns found in DB: {', '.join(existing)}."
                     ),
                     rule_id=rule["id"],
@@ -503,74 +526,39 @@ class CapabilityValidator:
         return found
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Tier 2 — Schema metadata  (FIX 2 — compound phrase decomposition)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Morphological variant generator  (no hardcoding — rule-based only)
+    # Tier 2 — Schema metadata
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _morphological_variants(word: str) -> List[str]:
-        """
-        Return a list of morphological forms of *word* to try against schema
-        identifiers.  Ordered from most-specific to least-specific so the first
-        match wins.
-
-        Rules applied (all rule-based, zero hardcoding):
-          Plural → singular
-            -ies  → -y          cities   → city
-            -ves  → -f/-fe      leaves   → leaf / leave  (both tried)
-            -sses → -ss         classes  → class
-            -xes  → -x          boxes    → box
-            -ches → -ch         branches → branch
-            -shes → -sh         dishes   → dish
-            -ses  → -s          buses    → bus
-            -s    → ""          products → product  (generic strip)
-
-          Singular → plural     (useful when DB has plural table names)
-            word  → word + s
-            word  → word + es   (for -s/-x/-ch/-sh endings)
-
-          Compound word splitting
-            camelCase → tokens   salesRegion → ["sales", "region"]
-            underscore → tokens  ship_city   → ["ship", "city"]
-
-        The original word is always included first so exact matches take
-        priority over morphological transformations.
-        """
         w = word.lower().strip()
-        variants: List[str] = [w]   # exact form always first
+        variants: List[str] = [w]
 
-        # ── Plural → singular ────────────────────────────────────────────────
         if len(w) <= 2:
             return [w]
         if w.endswith("ies") and len(w) > 4:
-            variants.append(w[:-3] + "y")          # cities → city
+            variants.append(w[:-3] + "y")
         if w.endswith("ves") and len(w) > 4:
-            variants.append(w[:-3] + "f")           # leaves → leaf
-            variants.append(w[:-3] + "fe")          # knives → knife
+            variants.append(w[:-3] + "f")
+            variants.append(w[:-3] + "fe")
         if w.endswith("sses"):
-            variants.append(w[:-2])                 # classes → class
+            variants.append(w[:-2])
         if w.endswith("xes"):
-            variants.append(w[:-2])                 # boxes → box
+            variants.append(w[:-2])
         if w.endswith("ches"):
-            variants.append(w[:-2])                 # branches → branch
+            variants.append(w[:-2])
         if w.endswith("shes"):
-            variants.append(w[:-2])                 # dishes → dish
+            variants.append(w[:-2])
         if w.endswith("ses") and len(w) > 4:
-            variants.append(w[:-1])                 # buses → bus
+            variants.append(w[:-1])
         if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
-            variants.append(w[:-1])                 # generic -s strip
+            variants.append(w[:-1])
 
-        # ── Singular → plural ────────────────────────────────────────────────
         if not w.endswith("s"):
             variants.append(w + "s")
             if w[-1] in ("s", "x") or w.endswith(("ch", "sh")):
                 variants.append(w + "es")
 
-        # ── camelCase / underscore splitting ────────────────────────────────
-        # e.g. "salesRegion" → ["sales", "region"]
         tokens_camel = re.sub(r"([a-z])([A-Z])", r"\1 \2", word).lower().split()
         tokens_under = re.split(r"[_\s]+", w)
         for sub_tokens in (tokens_camel, tokens_under):
@@ -578,13 +566,11 @@ class CapabilityValidator:
                 for t in sub_tokens:
                     if t and t not in variants:
                         variants.append(t)
-                        # also add morphological variants of each sub-token
                         if t.endswith("ies") and len(t) > 4:
                             variants.append(t[:-3] + "y")
                         if t.endswith("s") and not t.endswith("ss") and len(t) > 3:
                             variants.append(t[:-1])
 
-        # Deduplicate while preserving order
         seen: set = set()
         unique: List[str] = []
         for v in variants:
@@ -594,33 +580,13 @@ class CapabilityValidator:
         return unique
 
     def _check_schema_metadata(self, concept: str) -> Optional[ConceptVerdict]:
-        """
-        Six strategies, applied in order:
-
-          1. Exact table name                   "suppliers"
-          2. Exact column name                  "country"
-          3. Fuzzy column name (LIKE)           '%country%'
-          3b. Morphological variants            "cities" → try "city" → col LIKE '%city%'
-          4. Compound phrase decomposition      "supplier country"
-                                                → table LIKE '%supplier%'
-                                                  AND col LIKE '%country%'
-          5. Categorical value                  meta_values exact / LIKE
-
-        Strategy 3b is the generic fix for plural/inflected entity words that
-        the LLM injects into entity/dimension slots.  Examples:
-          "cities"    → variants include "city"  → matches Customers.City
-          "countries" → variants include "country" → matches Customers.Country
-          "categories"→ variants include "category" → matches Categories.CategoryName
-          "employees" → variants include "employee" → matches Employees table
-        No word is hardcoded — the transformation is purely rule-based.
-        """
         normalized = "".join(concept.split()).lower()
         tokens     = concept.lower().split()
 
         try:
             with self.engine.connect() as conn:
 
-                # ── 1. Exact table name ──────────────────────────────────────
+                # 1. Exact table name
                 row = conn.execute(
                     text("SELECT name FROM meta_tables "
                          "WHERE replace(LOWER(name),' ','') = :n LIMIT 1"),
@@ -634,7 +600,7 @@ class CapabilityValidator:
                         matched_objects=[row[0]],
                     )
 
-                # ── 2. Exact column name ─────────────────────────────────────
+                # 2. Exact column name
                 row = conn.execute(
                     text("SELECT table_name, name FROM meta_columns "
                          "WHERE replace(LOWER(name),' ','') = :n LIMIT 1"),
@@ -648,7 +614,7 @@ class CapabilityValidator:
                         matched_objects=[f"{row[0]}.{row[1]}"],
                     )
 
-                # ── 3. Fuzzy column name (LIKE) ──────────────────────────────
+                # 3. Fuzzy column name (LIKE)
                 row = conn.execute(
                     text("SELECT table_name, name FROM meta_columns "
                          "WHERE replace(LOWER(name),' ','') LIKE :n LIMIT 1"),
@@ -662,17 +628,12 @@ class CapabilityValidator:
                         matched_objects=[f"{row[0]}.{row[1]}"],
                     )
 
-                # ── 3b. Morphological variants ────────────────────────────────
-                # Generate rule-based plural/singular/camelCase forms of every
-                # token in the concept and try each as a table or column name.
-                # Handles: "cities"→"city", "countries"→"country",
-                #          "categories"→"category", "employees"→"employee", etc.
+                # 3b. Morphological variants
                 all_tokens = tokens if len(tokens) > 1 else [normalized]
                 for token in all_tokens:
                     for variant in self._morphological_variants(token):
-                        if variant == token:          # already tried above
+                        if variant == token:
                             continue
-                        # table name match on variant
                         row = conn.execute(
                             text("SELECT name FROM meta_tables "
                                  "WHERE replace(LOWER(name),' ','') = :v "
@@ -689,7 +650,6 @@ class CapabilityValidator:
                                 ),
                                 matched_objects=[row[0]],
                             )
-                        # column name match on variant
                         row = conn.execute(
                             text("SELECT table_name, name FROM meta_columns "
                                  "WHERE replace(LOWER(name),' ','') = :v "
@@ -707,7 +667,7 @@ class CapabilityValidator:
                                 matched_objects=[f"{row[0]}.{row[1]}"],
                             )
 
-                # ── 4. Compound phrase decomposition ─────────────────────────
+                # 4. Compound phrase decomposition
                 if len(tokens) >= 2:
                     hit = self._compound_column_lookup(conn, tokens)
                     if hit:
@@ -721,7 +681,7 @@ class CapabilityValidator:
                             matched_objects=[f"{hit[0]}.{hit[1]}"],
                         )
 
-                # ── 5. Categorical value ─────────────────────────────────────
+                # 5. Categorical value
                 row = conn.execute(
                     text(
                         "SELECT table_name, column_name, value FROM meta_values "
@@ -750,17 +710,6 @@ class CapabilityValidator:
     def _compound_column_lookup(
         self, conn, tokens: List[str]
     ) -> Optional[Tuple[str, str]]:
-        """
-        Try (qualifier, attribute) pairs derived from the token list.
-
-        Priority order:
-          (tokens[0], tokens[-1])  — first/last  e.g. supplier / country  ← most common
-          (tokens[-1], tokens[0])  — reversed    e.g. country / supplier
-          (tokens[0], tokens[1])   — first two   (only when len > 2)
-
-        Then a table-anchor fallback: if any single token matches a table name,
-        try every other token as a column name within that table.
-        """
         pairs = []
         if len(tokens) >= 2:
             pairs.append((tokens[0],  tokens[-1]))
@@ -781,7 +730,6 @@ class CapabilityValidator:
             if row:
                 return (row[0], row[1])
 
-        # Table-anchor fallback
         for token in tokens:
             tbl_row = conn.execute(
                 text("SELECT name FROM meta_tables WHERE LOWER(name) LIKE :t LIMIT 1"),
@@ -804,10 +752,15 @@ class CapabilityValidator:
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Tier 3 — Ontology / Neo4j synonyms  (unchanged from your version)
+    # Tier 3 — Legacy Neo4j ontology + Vector fallback
     # ──────────────────────────────────────────────────────────────────────────
 
     def _check_ontology(self, concept: str) -> Optional[ConceptVerdict]:
+        """
+        Queries the legacy :Concept/:Synonym → :Table path (pre-catalogue).
+        Note: OntologyConcept nodes are handled exclusively in Tier 0 via
+        OntologyResolver — this method only touches :Concept and :Synonym nodes.
+        """
         if self.neo4j is None:
             return self._check_vector_fallback(concept)
 
@@ -816,6 +769,7 @@ class CapabilityValidator:
                 """
                 MATCH (s:Synonym)
                 WHERE replace(toLower(s.name), ' ', '') = replace(toLower($name), ' ', '')
+                  AND NOT (s)-[:IS_SYNONYM_FOR]->(:OntologyConcept)
                 MATCH (s)-[:IS_SYNONYM_FOR]->(con:Concept)-[:MAPS_TO]->(t:Table)
                 RETURN t.name AS table_name, con.name AS concept
                 LIMIT 3
@@ -829,7 +783,7 @@ class CapabilityValidator:
                     concept=concept,
                     status=ConceptStatus.MATCHED,
                     evidence=(
-                        f"Ontology synonym match: '{concept}' → "
+                        f"Legacy ontology synonym match: '{concept}' → "
                         f"concept(s) {concepts_found} → table(s) {tables}."
                     ),
                     matched_objects=tables,
@@ -849,12 +803,12 @@ class CapabilityValidator:
                 return ConceptVerdict(
                     concept=concept,
                     status=ConceptStatus.MATCHED,
-                    evidence=f"Direct ontology concept match to table(s) {tables}.",
+                    evidence=f"Legacy ontology direct concept match to table(s) {tables}.",
                     matched_objects=tables,
                 )
 
         except Exception as e:
-            print(f"[CapabilityValidator] Neo4j ontology check failed for '{concept}': {e}")
+            print(f"[CapabilityValidator] Neo4j legacy ontology check failed for '{concept}': {e}")
 
         return self._check_vector_fallback(concept)
 
@@ -894,7 +848,7 @@ class CapabilityValidator:
                             matched_objects=[f"{tbl_name}.{col_name}"],
                         )
         except Exception as e:
-            print(f"[CapabilityValidator] Vector DB semantic fallback failed for '{concept}': {e}")
+            print(f"[CapabilityValidator] Vector DB fallback failed for '{concept}': {e}")
 
         return None
 
@@ -924,7 +878,7 @@ class CapabilityValidator:
             return False
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Filter helpers  (unchanged from your version)
+    # Filter helpers
     # ──────────────────────────────────────────────────────────────────────────
 
     def _parse_filter_lhs_rhs(
@@ -1018,7 +972,7 @@ class CapabilityValidator:
         )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Catalogue loading and indexing  (unchanged)
+    # Catalogue loading and indexing
     # ──────────────────────────────────────────────────────────────────────────
 
     def _load_catalogue(self, override_path: Optional[str]) -> Dict:

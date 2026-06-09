@@ -4,11 +4,14 @@ import json
 import re
 from app.utils.plan_helper import parse_plan
 
+
 class SQLGenerator:
     def __init__(self, llm_client: LLMClient):
         self.llm = llm_client
 
-    def generate_plan_and_sql(self, query: str, intent: Dict[str, Any], context: str) -> tuple[Dict[str, Any], str]:
+    def generate_plan_and_sql(
+        self, query: str, intent: Dict[str, Any], context: str
+    ) -> tuple[Dict[str, Any], str]:
         """
         Generates both the logical plan and the final SQL query in a single LLM call.
         Returns a tuple of (plan_dict, sql_string).
@@ -23,6 +26,21 @@ class SQLGenerator:
 
 ### PROTOCOL 2: VALUE LOCKING
 If a term from the user's query is listed in the 'SEMANTIC VALUE MAPPINGS' section of the context, you MUST use the corresponding 'Exact Value' provided in your WHERE clause. You are forbidden from modifying, generalizing, or simplifying these values.
+
+### PROTOCOL 2b: ONTOLOGY COLUMN ALIAS ENFORCEMENT
+If the context contains an 'ONTOLOGY COLUMN ALIASES' section, those mappings are AUTHORITATIVE.
+Rules:
+  - When a user term (e.g. "customer name") appears mapped to a specific column
+    (e.g. Customers.ContactName), you MUST use that exact column in your SELECT
+    and WHERE clauses.
+  - You are FORBIDDEN from substituting any other column from the same table,
+    even if another column name appears more similar to the user's phrase.
+  - When a mapping shows a CONCAT expression (e.g. FirstName || ' ' || LastName),
+    use that exact expression — do not select only one of the constituent columns.
+  - When a mapping shows a SQL Expression for a metric, use it verbatim —
+    do not reconstruct the formula from scratch.
+  - Context-dependent mappings include a HINT — read the hint and apply the
+    appropriate column based on the filter values in the query.
 
 ### PROTOCOL 3: CANONICAL GROUNDING
 ONLY use tables and columns explicitly listed in the 'CANONICAL SCHEMA DEFINITIONS' section. If a column is missing from a table's list, it DOES NOT exist in that table. Use the provided JOIN PATHS to navigate between tables.
@@ -66,140 +84,137 @@ SELECT ...
         {context}
         """
 
-        # Build the message list, injecting field metadata when doc mode is active
         from app.state import USE_CLIENT_DOC
         if USE_CLIENT_DOC:
             from app.utils.metadata_loader import get_relevant_rules
-            # Get only the rules that are relevant for the current intent to keep the prompt small
-            field_meta = get_relevant_rules(intent)
-            # Append a FIELD METADATA block (filtered) to the user prompt
-            meta_block = "\n### FIELD METADATA\n```json\n" + json.dumps(field_meta, indent=2) + "\n```"
-            prompt_with_meta = prompt + meta_block
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_with_meta}
-            ]
+            field_meta     = get_relevant_rules(intent)
+            meta_block     = (
+                "\n### FIELD METADATA\n```json\n"
+                + json.dumps(field_meta, indent=2)
+                + "\n```"
+            )
+            prompt_final = prompt + meta_block
         else:
-            # Heuristic mode – add a minimal HEURISTICS block to guide the LLM
-            heuristics_block = "\n### HEURISTICS\nUse deterministic name‑based heuristics for joins and rounding."
-            prompt_with_heur = prompt + heuristics_block
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_with_heur}
-            ]
-        
+            heuristics_block = (
+                "\n### HEURISTICS\n"
+                "Use deterministic name-based heuristics for joins and rounding."
+            )
+            prompt_final = prompt + heuristics_block
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": prompt_final},
+        ]
+
         response = self.llm.chat(messages)
 
-        # 1. Parse JSON Plan
-        from app.utils.plan_helper import parse_plan
+        # Parse plan
         plan = parse_plan(response)
-        # Ensure plan is a dict
         if not isinstance(plan, dict):
             plan = {"error": "Failed to parse plan"}
 
-        # 2. Parse SQL Query (now using clean_response helper)
+        # Parse SQL
         from app.utils.sql_helper import clean_response
         sql = clean_response(response)
-        # Apply heuristic post‑processing when not using client doc mode
-        from app.state import USE_CLIENT_DOC
+
+        # Heuristic post-processing (non-doc mode only)
         if not USE_CLIENT_DOC:
             from app.utils.heuristic_rules import enforce_integer_measures, enforce_precision
-            # Example: enforce integer rounding for measures marked as integer (placeholder logic)
             sql = enforce_integer_measures(sql)
-            # Precision map could be derived from intent or a static config; using empty dict here
             sql = enforce_precision(sql, {})
-        # If extraction failed, fall back to a dynamic query based on intent and schema context
+
         if not sql:
             sql = self._fallback_sql_from_intent(intent, context)
+
         return plan, sql
 
+    # ──────────────────────────────────────────────────────────────────────────
+
     def _fallback_sql_from_intent(self, intent: Dict[str, Any], context: str) -> str:
-        """Generate a generic fallback SELECT based on intent and the provided schema JSON.
-        The context string is expected to be a JSON representation of the schema
-        (as produced by SchemaExtractor). This method parses the JSON to discover
-        table and column names, then builds a sensible query:
-        * Table – first entity (plural stripped to singular, capitalized).
-        * Columns – any columns whose name contains a metric or dimension keyword.
-          If none match, selects '*'.
-        * ORDER BY – first metric column (if any) descending.
-        * LIMIT 5 – as requested by most "top‑N" queries.
+        """
+        Generate a generic fallback SELECT based on intent and the provided
+        schema context string.  Used when the primary LLM extraction fails.
         """
         try:
             schema = json.loads(context)
         except Exception:
-            # If context is not JSON, fall back to a very generic query
             return "SELECT * FROM sqlite_master LIMIT 5"
 
-        # Choose table name from entities
         table_name = None
         if intent.get("entities"):
-            ent = intent["entities"][0]
-            # naive singularisation (remove trailing 's' if present)
-            table_name = ent.rstrip('s').capitalize()
-        # Verify table exists in schema
+            ent        = intent["entities"][0]
+            table_name = ent.rstrip("s").capitalize()
+
         table_info = None
-        for tbl in schema.get("tables", []):
-            if tbl.get("name", "").lower() == table_name.lower():
-                table_info = tbl
-                break
+        if table_name:
+            for tbl in schema.get("tables", []):
+                if tbl.get("name", "").lower() == table_name.lower():
+                    table_info = tbl
+                    break
         if not table_info:
-            # fallback to first table in schema
             if schema.get("tables"):
                 table_info = schema["tables"][0]
                 table_name = table_info.get("name", "*")
             else:
                 return "SELECT * LIMIT 5"
 
-        # Gather candidate columns
-        cols_set = []
-        # helper to match keywords
         def matches(col_name, keywords):
             lname = col_name.lower()
             return any(k.lower() in lname for k in keywords)
 
-        metrics = intent.get("metrics", [])
+        metrics    = intent.get("metrics", [])
         dimensions = intent.get("dimensions", [])
+        cols_set   = []
         for col in table_info.get("columns", []):
             col_name = col.get("name")
             if not col_name:
                 continue
             if matches(col_name, metrics) or matches(col_name, dimensions):
                 cols_set.append(col_name)
-        # Ensure we have at least one column
         if not cols_set:
-            # add a primary key if present
             pk = table_info.get("primary_key", [])
             if pk:
                 cols_set.extend(pk)
-        # If still empty, select *
+
         select_clause = "*" if not cols_set else ", ".join(cols_set)
-        # Order by first metric column if any
-        order_clause = ""
+        order_clause  = ""
         for col in cols_set:
             if metrics and any(m.lower() in col.lower() for m in metrics):
                 order_clause = f" ORDER BY {col} DESC"
                 break
-        sql = f"SELECT {select_clause} FROM {table_name}{order_clause} LIMIT 5"
-        return sql
 
-    def generate_sql_only(self, query: str, plan: Dict[str, Any], context: str, error: str) -> str:
+        return f"SELECT {select_clause} FROM {table_name}{order_clause} LIMIT 5"
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def generate_sql_only(
+        self,
+        query: str,
+        plan: Dict[str, Any],
+        context: str,
+        error: str,
+    ) -> str:
         """
-        Lighter version of the generator used specifically during self-correction retries on SQL errors.
+        Lighter self-correction path used during retry attempts.
         Bypasses plan reconstruction to conserve tokens.
         """
         system_prompt = """You are a Universal SQL Generation Agent. Your goal is to convert Natural Language queries into valid SQLite SQL using a Protocol-Driven approach.
 
 ### PROTOCOL 1: VALUE LOCKING
-If a term from the user's query is listed in the 'SEMANTIC VALUE MAPPINGS' section of the context, you MUST use the corresponding 'Exact Value' provided in your WHERE clause. You are forbidden from modifying, generalizing, or simplifying these values.
+If a term from the user's query is listed in the 'SEMANTIC VALUE MAPPINGS' section of the context, you MUST use the corresponding 'Exact Value' provided in your WHERE clause.
 
-### PROTOCOL 2: CANONICAL GROUNDING & JOIN PATHS
+### PROTOCOL 2: ONTOLOGY COLUMN ALIAS ENFORCEMENT
+If the context contains an 'ONTOLOGY COLUMN ALIASES' section, those mappings are AUTHORITATIVE.
+You MUST use the exact columns or SQL expressions specified. Do NOT substitute similar columns.
+
+### PROTOCOL 3: CANONICAL GROUNDING & JOIN PATHS
 Use only tables and columns listed in 'CANONICAL SCHEMA DEFINITIONS'. Use the suggested join paths.
 
-### PROTOCOL 3: GRAIN PRESERVATION & DETAIL CTEs
+### PROTOCOL 4: GRAIN PRESERVATION & DETAIL CTEs
 Define base CTEs for detail tables to prevent 'Summation Explosion'.
 
-### PROTOCOL 4: AUDIT & CORRECTION
-Re-audit your join paths and schema. The previous query failed with an error. Fix the query by carefully re-examining the columns and table constraints.
+### PROTOCOL 5: AUDIT & CORRECTION
+The previous query failed. Re-audit your join paths and schema. Fix by carefully re-examining columns and table constraints.
 
 Return ONLY the SQL code inside standard ```sql ... ``` markdown blocks."""
 
@@ -211,17 +226,18 @@ Return ONLY the SQL code inside standard ```sql ... ``` markdown blocks."""
 
         ### CRITICAL: PREVIOUS ATTEMPT FAILED
         ERROR: {error}
-        ACTION REQUIRED: Your previous SQL had a schema/execution error. Re-read the CONTEXT carefully. The column you used might belong to a DIFFERENT table. Fix the join path and column locations.
+        ACTION REQUIRED: Your previous SQL had a schema/execution error. Re-read the CONTEXT carefully.
+        The column you used might belong to a DIFFERENT table. Check the ONTOLOGY COLUMN ALIASES
+        section first — it specifies the exact columns to use for each user term.
+        Fix the join path and column locations accordingly.
         """
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user",   "content": prompt},
         ]
 
         sql = self.llm.chat(messages)
 
-        # Cleanup markdown formatting using helper
         from app.utils.sql_helper import clean_response
-        sql = clean_response(sql)
-        return sql
+        return clean_response(sql)

@@ -3,110 +3,173 @@ from typing import List, Dict, Any
 from sqlalchemy import create_engine, text
 from app.db.neo4j_client import Neo4jClient
 from app.db.vector_client import VectorClient
+from app.core.ontology_resolver import OntologyResolver
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 class ContextRetriever:
     def __init__(self, neo4j_client: Neo4jClient, vector_client: VectorClient):
-        self.graph = neo4j_client
+        self.graph  = neo4j_client
         self.vector = vector_client
         self.info_db_path = "data/info.db"
         self.engine = create_engine(f"sqlite:///{self.info_db_path}")
+
+        # Ontology Catalogue resolver — used as primary resolution path in
+        # _resolve_ontology() before falling back to legacy Concept/Synonym nodes.
+        self._ontology_resolver = OntologyResolver(neo4j_client)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Logging helpers
+    # ──────────────────────────────────────────────────────────────────────────
+
     def _log_neo4j(self, label: str, result):
-        """
-        Formats a Neo4j query result for clean terminal output.
-        """
         try:
-            import json
             compact = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
         except Exception:
             compact = str(result)
         print(f"[NEO4J] {label} → {compact}")
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 1 resolvers
+    # ──────────────────────────────────────────────────────────────────────────
+
     def _resolve_ontology(self, entity: str) -> tuple[set[str], list[str]]:
-        tables = set()
+        """
+        Resolve an entity/concept string to table names and grounding mappings.
+
+        Priority order:
+          1. OntologyCatalogue (OntologyConcept nodes from ontology_catalogue.json)
+             — returns column-level aliases and pre-built SQL expressions.
+          2. Legacy Concept/Synonym → Table path (pre-catalogue behaviour).
+
+        Returns (tables: set[str], mappings: list[str]).
+        Mappings are plain strings formatted for injection into the LLM context.
+        """
+        tables   = set()
         mappings = []
-        synonym_matches = self.graph.query(
-            """
-            MATCH (s:Synonym)
-            WHERE replace(toLower(s.name), ' ', '') = replace(toLower($name), ' ', '')
-            MATCH (s)-[:IS_SYNONYM_FOR]->(con:Concept)-[:MAPS_TO]->(t:Table)
-            RETURN t.name as table_name, con.name as concept
-            """,
-            {"name": entity}
-        )
-        self._log_neo4j("ontology", synonym_matches)
-        if synonym_matches:
-            for m in synonym_matches:
-                tables.add(m["table_name"])
-                mappings.append(f"Business Term: '{entity}' maps to Table '{m['table_name']}'")
+
+        # ── 1. Ontology Catalogue (new primary path) ──────────────────────────
+        try:
+            resolution = self._ontology_resolver.resolve(entity)
+        except Exception as e:
+            print(f"[ContextRetriever] OntologyResolver error for '{entity}': {e}")
+            resolution = None
+
+        if resolution and resolution.resolved:
+            for tbl in resolution.tables:
+                tables.add(tbl)
+            mappings.append(resolution.to_grounding_string())
+            return tables, mappings
+
+        # ── 2. Legacy Concept/Synonym → Table ────────────────────────────────
+        try:
+            synonym_matches = self.graph.query(
+                """
+                MATCH (s:Synonym)
+                WHERE replace(toLower(s.name), ' ', '') = replace(toLower($name), ' ', '')
+                  AND NOT (s)-[:IS_SYNONYM_FOR]->(:OntologyConcept)
+                MATCH (s)-[:IS_SYNONYM_FOR]->(con:Concept)-[:MAPS_TO]->(t:Table)
+                RETURN t.name as table_name, con.name as concept
+                """,
+                {"name": entity},
+            )
+            self._log_neo4j("ontology_legacy", synonym_matches)
+            if synonym_matches:
+                for m in synonym_matches:
+                    tables.add(m["table_name"])
+                    mappings.append(
+                        f"Business Term: '{entity}' maps to Table '{m['table_name']}'"
+                    )
+        except Exception as e:
+            print(f"[ContextRetriever] Legacy ontology query failed for '{entity}': {e}")
+
         return tables, mappings
 
     def _resolve_vector_main(self, intent: Dict[str, Any]) -> tuple[set[str], list[str]]:
-        tables = set()
+        tables   = set()
         mappings = []
-        search_terms = list(intent.get("entities", [])) + intent.get("metrics", []) + intent.get("filters", []) + intent.get("dimensions", [])
+        search_terms = (
+            list(intent.get("entities", []))
+            + intent.get("metrics", [])
+            + intent.get("filters", [])
+            + intent.get("dimensions", [])
+        )
         if not search_terms:
             return tables, mappings
         search_query = " ".join(search_terms)
-        
+
         vector_results = self.vector.search(search_query, n_results=15)
-        if vector_results and 'metadatas' in vector_results and vector_results['metadatas']:
-            for meta in vector_results['metadatas'][0]:
-                if meta['type'] == 'table':
-                    tables.add(meta['name'])
-                elif meta['type'] == 'column':
-                    tables.add(meta['table'])
-                    mappings.append(f"Field Match: Field '{meta['name']}' found in Table '{meta['table']}'")
-                elif meta['type'] == 'value':
-                    tables.add(meta['table'])
-                    mappings.append(f"Value Resolution: Found '{meta['value']}' in {meta['table']}.{meta['column']}")
+        if vector_results and "metadatas" in vector_results and vector_results["metadatas"]:
+            for meta in vector_results["metadatas"][0]:
+                if meta["type"] == "table":
+                    tables.add(meta["name"])
+                elif meta["type"] == "column":
+                    tables.add(meta["table"])
+                    mappings.append(
+                        f"Field Match: Field '{meta['name']}' found in Table '{meta['table']}'"
+                    )
+                elif meta["type"] == "value":
+                    tables.add(meta["table"])
+                    mappings.append(
+                        f"Value Resolution: Found '{meta['value']}' "
+                        f"in {meta['table']}.{meta['column']}"
+                    )
         return tables, mappings
 
     def _resolve_sqlite_value(self, term: str) -> tuple[set[str], list[str]]:
-        """Lookup exact semantic values in the info SQLite DB.
-        If the ``meta_values`` table is missing (e.g., after a fresh sync), we simply
-        return empty results instead of raising an exception, allowing the rest of
-        the Neo4j‑based grounding to proceed.
-        """
-        tables = set()
+        """Exact and fuzzy value lookup in the Info DB meta_values table."""
+        tables   = set()
         mappings = []
         term_nospace = "".join(term.split()).lower()
         sql = text("""
-            SELECT table_name, column_name, value 
-            FROM meta_values 
-            WHERE replace(LOWER(value), ' ', '') = :t 
-               OR replace(LOWER(value), ' ', '') LIKE :t_like 
+            SELECT table_name, column_name, value
+            FROM meta_values
+            WHERE replace(LOWER(value), ' ', '') = :t
+               OR replace(LOWER(value), ' ', '') LIKE :t_like
             LIMIT 3
         """)
         try:
             with self.engine.connect() as conn:
-                res = conn.execute(sql, {"t": term_nospace, "t_like": f"%{term_nospace}%"}).fetchall()
+                res = conn.execute(
+                    sql, {"t": term_nospace, "t_like": f"%{term_nospace}%"}
+                ).fetchall()
                 for r in res:
                     tables.add(r[0])
-                    mappings.append(f"Value Lock: Term '{term}' maps to Exact DB Value '{r[2]}' in {r[0]}.{r[1]}")
+                    mappings.append(
+                        f"Value Lock: Term '{term}' maps to Exact DB Value "
+                        f"'{r[2]}' in {r[0]}.{r[1]}"
+                    )
         except Exception as e:
-            # ``meta_values`` may not exist; log and continue silently.
             print(f"⚠️ SQLite lookup failed for term '{term}': {e}")
         return tables, mappings
 
     def _resolve_deep_column(self, term: str) -> tuple[set[str], list[str]]:
-        tables = set()
+        tables   = set()
         mappings = []
         col_search = self.vector.search(f"database object named {term}", n_results=3)
-        if col_search and 'metadatas' in col_search and col_search['metadatas']:
-            for meta in col_search['metadatas'][0]:
-                if meta['type'] == 'column':
-                    tables.add(meta['table'])
-                    mappings.append(f"Deep Resolve: Term '{term}' matches Column '{meta['name']}' in Table '{meta['table']}'")
+        if col_search and "metadatas" in col_search and col_search["metadatas"]:
+            for meta in col_search["metadatas"][0]:
+                if meta["type"] == "column":
+                    tables.add(meta["table"])
+                    mappings.append(
+                        f"Deep Resolve: Term '{term}' matches Column "
+                        f"'{meta['name']}' in Table '{meta['table']}'"
+                    )
         return tables, mappings
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 2 — Multi-hop join reasoning
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _find_shortest_path(self, t1: str, t2: str) -> list[str]:
         path_results = self.graph.query(
             """
-            MATCH p = shortestPath((t1:Table {name: $t1})-[:REFERENCES_TABLE*..5]-(t2:Table {name: $t2}))
+            MATCH p = shortestPath(
+                (t1:Table {name: $t1})-[:REFERENCES_TABLE*..5]-(t2:Table {name: $t2})
+            )
             RETURN [node in nodes(p) | node.name] as path_nodes
             """,
-            {"t1": t1, "t2": t2}
+            {"t1": t1, "t2": t2},
         )
         self._log_neo4j("shortest_path", path_results)
         if path_results and path_results[0]["path_nodes"]:
@@ -122,231 +185,254 @@ class ContextRetriever:
             OPTIONAL MATCH (cb)-[r2:REFERENCES]->(ca)
             WITH ca, cb, r1, r2
             WHERE r1 IS NOT NULL OR r2 IS NOT NULL
-            RETURN ca.name as col_a, cb.name as col_b, (r1 IS NOT NULL) as ta_is_detail
+            RETURN ca.name as col_a, cb.name as col_b,
+                   (r1 IS NOT NULL) as ta_is_detail
             """,
-            {"ta": ta, "tb": tb}
+            {"ta": ta, "tb": tb},
         )
         self._log_neo4j("join_details", join_cols)
         paths = []
         if join_cols:
             for jc in join_cols:
-                col_a = jc["col_a"]
-                col_b = jc["col_b"]
+                col_a        = jc["col_a"]
+                col_b        = jc["col_b"]
                 ta_is_detail = jc["ta_is_detail"]
-                
                 if ta_is_detail:
-                    paths.append(f"- To join {ta} and {tb}: Use `{ta}.{col_a} = {tb}.{col_b}`")
-                    paths.append(f"  * CONSTRAINT: '{tb}' is a Header table relative to the Detail table '{ta}'. Do not SUM() aggregate columns from '{tb}' directly after joining.")
+                    paths.append(
+                        f"- To join {ta} and {tb}: Use `{ta}.{col_a} = {tb}.{col_b}`"
+                    )
+                    paths.append(
+                        f"  * CONSTRAINT: '{tb}' is a Header table relative to "
+                        f"the Detail table '{ta}'. Do not SUM() aggregate columns "
+                        f"from '{tb}' directly after joining."
+                    )
                 else:
-                    paths.append(f"- To join {tb} and {ta}: Use `{tb}.{col_b} = {ta}.{col_a}`")
-                    paths.append(f"  * CONSTRAINT: '{ta}' is a Header table relative to the Detail table '{tb}'. Do not SUM() aggregate columns from '{ta}' directly after joining.")
+                    paths.append(
+                        f"- To join {tb} and {ta}: Use `{tb}.{col_b} = {ta}.{col_a}`"
+                    )
+                    paths.append(
+                        f"  * CONSTRAINT: '{ta}' is a Header table relative to "
+                        f"the Detail table '{tb}'. Do not SUM() aggregate columns "
+                        f"from '{ta}' directly after joining."
+                    )
         return paths
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Relevance check (used by the legacy routes.py relevance scorer)
+    # ──────────────────────────────────────────────────────────────────────────
+
     def check_relevance(self, intent: Dict[str, Any]) -> tuple[float, list[str], list[str]]:
-        """
-        Check query relevance against the database schema, values, and business concepts.
-        Returns a tuple: (relevance_score, matched_concepts, unmatched_concepts)
-        """
         concepts = []
         for key in ["entities", "metrics", "filters", "dimensions"]:
             if key in intent and isinstance(intent[key], list):
                 concepts.extend(intent[key])
-        
-        # Deduplicate and clean
+
         unique_concepts = []
         for c in concepts:
             c_clean = str(c).strip()
             if c_clean and c_clean not in unique_concepts:
                 unique_concepts.append(c_clean)
-                
+
         if not unique_concepts:
             return 0.0, [], []
-            
-        matched = []
+
+        matched   = []
         unmatched = []
-        
-        # 1. Load client documentation rules & trigger phrases
+
         from app.state import get_catalogue, USE_CLIENT_DOC
-        trigger_phrases = set()
+        trigger_phrases: set = set()
         if USE_CLIENT_DOC:
             catalogue = get_catalogue()
             if catalogue and "rules" in catalogue:
                 for rule in catalogue["rules"]:
                     for phrase in rule.get("trigger_phrases", []):
                         trigger_phrases.add(phrase.lower())
-                        
-        # 2. Common Analytical / SQL keywords to avoid penalizing math operations
+
         ANALYTICAL_KEYWORDS = {
             "percentage", "percent", "contribution", "share", "proportion", "ratio", "rate",
             "total", "sum", "average", "avg", "count", "number of", "distinct",
             "by", "each", "per", "group by", "sort by", "order by", "top", "limit",
             "increase", "decrease", "growth", "trend", "change", "diff", "difference",
-            "monthly", "yearly", "quarterly", "daily", "annual", "ranking", "rank"
+            "monthly", "yearly", "quarterly", "daily", "annual", "ranking", "rank",
         }
-        
-        # Helper to check if a single word matches schema objects directly
+
         def is_word_in_schema(word: str) -> bool:
             word_nospace = "".join(word.split()).lower()
             if not word_nospace:
                 return False
-            # Check analytical keywords
             if word_nospace in ANALYTICAL_KEYWORDS:
                 return True
-            # Check SQLite tables & columns
             try:
                 with self.engine.connect() as conn:
-                    tbl_res = conn.execute(
-                        text("SELECT name FROM meta_tables WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
-                        {"t": word_nospace}
-                    ).fetchone()
-                    if tbl_res:
+                    if conn.execute(
+                        text("SELECT name FROM meta_tables WHERE replace(LOWER(name),' ','')=:t LIMIT 1"),
+                        {"t": word_nospace},
+                    ).fetchone():
                         return True
-                    col_res = conn.execute(
-                        text("SELECT name FROM meta_columns WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
-                        {"t": word_nospace}
-                    ).fetchone()
-                    if col_res:
+                    if conn.execute(
+                        text("SELECT name FROM meta_columns WHERE replace(LOWER(name),' ','')=:t LIMIT 1"),
+                        {"t": word_nospace},
+                    ).fetchone():
                         return True
             except Exception:
                 pass
-            # Check Neo4j nodes (Table, Column, Concept, Synonym)
             try:
                 neo4j_res = self.graph.query(
                     """
                     MATCH (n)
-                    WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym)
+                    WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym OR n:OntologyConcept)
                       AND replace(toLower(n.name), ' ', '') = replace(toLower($name), ' ', '')
                     RETURN n.name LIMIT 1
                     """,
-                    {"name": word}
+                    {"name": word},
                 )
                 if neo4j_res:
                     return True
             except Exception:
                 pass
             return False
-            
+
         for concept in unique_concepts:
             concept_lower = concept.lower()
-            is_matched = False
-            
-            # Case A: Check direct matches in analytical keywords
-            if concept_lower in ANALYTICAL_KEYWORDS:
+            is_matched    = False
+
+            # A. Ontology catalogue (new — highest priority)
+            if not is_matched:
+                try:
+                    resolution = self._ontology_resolver.resolve(concept)
+                    if resolution.resolved:
+                        is_matched = True
+                except Exception:
+                    pass
+
+            # B. Analytical keywords
+            if not is_matched and concept_lower in ANALYTICAL_KEYWORDS:
                 is_matched = True
-                
-            # Case B: Check client documentation trigger phrases
+
+            # C. Client doc trigger phrases
             if not is_matched and trigger_phrases:
                 for phrase in trigger_phrases:
-                    # Exact match or substring match
                     if concept_lower == phrase or concept_lower in phrase or phrase in concept_lower:
                         is_matched = True
                         break
-                        
-            # Case C: Check Neo4j (Tables, Columns, Concepts, Synonyms)
+
+            # D. Neo4j (Tables, Columns, Concepts, Synonyms, OntologyConcepts)
             if not is_matched:
                 try:
                     neo4j_res = self.graph.query(
                         """
                         MATCH (n)
-                        WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym)
+                        WHERE (n:Table OR n:Column OR n:Concept OR n:Synonym OR n:OntologyConcept)
                           AND replace(toLower(n.name), ' ', '') = replace(toLower($name), ' ', '')
                         RETURN n.name LIMIT 1
                         """,
-                        {"name": concept}
+                        {"name": concept},
                     )
                     if neo4j_res:
                         is_matched = True
                 except Exception as e:
                     print(f"Neo4j relevance check failed for '{concept}': {e}")
-                    
-            # Case D: Check SQLite Metadata (tables, columns, exact/fuzzy values)
+
+            # E. SQLite metadata
             if not is_matched:
                 concept_nospace = "".join(concept.split()).lower()
                 try:
                     with self.engine.connect() as conn:
-                        # Check table name
-                        tbl_res = conn.execute(
-                            text("SELECT name FROM meta_tables WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
-                            {"t": concept_nospace}
-                        ).fetchone()
-                        if tbl_res:
+                        if conn.execute(
+                            text("SELECT name FROM meta_tables WHERE replace(LOWER(name),' ','')=:t LIMIT 1"),
+                            {"t": concept_nospace},
+                        ).fetchone():
                             is_matched = True
-                            
-                        # Check column name
-                        if not is_matched:
-                            col_res = conn.execute(
-                                text("SELECT name FROM meta_columns WHERE replace(LOWER(name), ' ', '') = :t LIMIT 1"),
-                                {"t": concept_nospace}
-                            ).fetchone()
-                            if col_res:
-                                is_matched = True
-                                
-                        # Check values
-                        if not is_matched:
-                            val_res = conn.execute(
-                                text("SELECT value FROM meta_values WHERE replace(LOWER(value), ' ', '') = :t OR replace(LOWER(value), ' ', '') LIKE :t_like LIMIT 1"),
-                                {"t": concept_nospace, "t_like": f"%{concept_nospace}%"}
-                            ).fetchone()
-                            if val_res:
-                                is_matched = True
+                        if not is_matched and conn.execute(
+                            text("SELECT name FROM meta_columns WHERE replace(LOWER(name),' ','')=:t LIMIT 1"),
+                            {"t": concept_nospace},
+                        ).fetchone():
+                            is_matched = True
+                        if not is_matched and conn.execute(
+                            text("SELECT value FROM meta_values WHERE replace(LOWER(value),' ','')=:t OR replace(LOWER(value),' ','') LIKE :tl LIMIT 1"),
+                            {"t": concept_nospace, "tl": f"%{concept_nospace}%"},
+                        ).fetchone():
+                            is_matched = True
                 except Exception as e:
                     print(f"SQLite relevance check failed for '{concept}': {e}")
-            
-            # Case E: Check Vector DB with flexible name comparison
+
+            # F. Vector DB
             if not is_matched:
                 try:
                     vector_results = self.vector.search(concept, n_results=5)
-                    if vector_results and 'metadatas' in vector_results and vector_results['metadatas']:
-                        for meta in vector_results['metadatas'][0]:
-                            meta_name = (meta.get('name') or meta.get('value') or '').lower()
+                    if vector_results and "metadatas" in vector_results and vector_results["metadatas"]:
+                        for meta in vector_results["metadatas"][0]:
+                            meta_name = (meta.get("name") or meta.get("value") or "").lower()
                             if meta_name and (meta_name in concept_lower or concept_lower in meta_name):
                                 is_matched = True
                                 break
                 except Exception as e:
                     print(f"Vector relevance check failed for '{concept}': {e}")
-            
-            # Case F: Multi-word decomposition fallback
+
+            # G. Multi-word decomposition
             if not is_matched and " " in concept_lower:
                 words = [w.strip() for w in concept_lower.split() if w.strip()]
                 if words and all(is_word_in_schema(w) for w in words):
                     is_matched = True
-                    
+
             if is_matched:
                 matched.append(concept)
             else:
                 unmatched.append(concept)
-                
+
         score = len(matched) / len(unique_concepts) if unique_concepts else 0.0
         return score, matched, unmatched
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Primary entry point
+    # ──────────────────────────────────────────────────────────────────────────
 
     def retrieve_context(self, intent: Dict[str, Any]) -> tuple[str, list]:
         """
         Retrieves schema context and returns (context_string, mappings_list).
-        """
-        relevant_tables = set()
-        grounding_mappings = [] # To store [User Term -> Object]
 
-        # 1. Concurrent Entity & Intent Resolution (Phase 1)
+        The context_string is injected directly into the LLM prompt and contains:
+          - ONTOLOGY COLUMN ALIASES  (new — authoritative column-level mappings)
+          - SEMANTIC VALUE MAPPINGS  (existing — categorical value locks)
+          - CANONICAL SCHEMA DEFINITIONS  (DDL + sample rows)
+          - SUGGESTED JOIN PATHS AND CONSTRAINTS  (Neo4j shortest-path results)
+        """
+        relevant_tables    = set()
+        grounding_mappings = []
+
+        # ── Phase 1: Concurrent resolution ────────────────────────────────────
         futures = []
         with ThreadPoolExecutor() as executor:
-            # a. Resolve via Ontology (Neo4j)
-            for entity in intent.get("entities", []):
-                futures.append(executor.submit(self._resolve_ontology, entity))
 
-            # b. Resolve via Fuzzy Search (Vector DB)
+            # a. Concept resolution via OntologyCatalogue → legacy fallback
+            #    Must cover entities, metrics, AND dimensions so that
+            #    column-level aliases (e.g. "customer name" → Customers.ContactName)
+            #    reach the ONTOLOGY COLUMN ALIASES section of the LLM context.
+            ontology_concepts = dict.fromkeys(
+                list(intent.get("entities", []))
+                + intent.get("metrics", [])
+                + intent.get("dimensions", [])
+            )  # dict.fromkeys preserves order and deduplicates
+            for concept in ontology_concepts:
+                futures.append(executor.submit(self._resolve_ontology, concept))
+
+            # b. Fuzzy semantic search (Vector DB)
             futures.append(executor.submit(self._resolve_vector_main, intent))
 
-            # c. High-Confidence SQL Matching (Fuzzy SQL search for filters)
-            all_terms = set(list(intent.get("entities", [])) + intent.get("metrics", []) + intent.get("filters", []) + intent.get("dimensions", []))
+            # c. Categorical value matching (Info DB)
+            all_terms = set(
+                list(intent.get("entities", []))
+                + intent.get("metrics", [])
+                + intent.get("filters", [])
+                + intent.get("dimensions", [])
+            )
             for term in all_terms:
                 futures.append(executor.submit(self._resolve_sqlite_value, term))
 
-            # d. Recursive Deep Search for orphaned metrics/dimensions
-            deep_search_terms = intent.get("metrics", []) + intent.get("dimensions", [])
-            for term in deep_search_terms:
+            # d. Deep column search for metrics / dimensions
+            for term in intent.get("metrics", []) + intent.get("dimensions", []):
                 futures.append(executor.submit(self._resolve_deep_column, term))
 
-            # Gather results from Phase 1
             for future in as_completed(futures):
                 try:
                     tables, mappings = future.result()
@@ -355,7 +441,7 @@ class ContextRetriever:
                 except Exception as e:
                     print(f"Error in candidate lookup thread: {e}")
 
-        # Deduplicate grounding mappings while preserving order
+        # Deduplicate grounding mappings while preserving insertion order
         seen = set()
         deduped_mappings = []
         for m in grounding_mappings:
@@ -364,23 +450,24 @@ class ContextRetriever:
                 deduped_mappings.append(m)
         grounding_mappings = deduped_mappings
 
-        # 1.5. Multi-Hop Join Reasoning & Bridge Table Expansion (Neo4j) (Phase 2)
-        join_paths = []
-        discovered_joins = set()
+        # ── Phase 2: Multi-hop join reasoning ─────────────────────────────────
+        join_paths        = []
         additional_tables = set()
 
         if len(relevant_tables) > 1:
-            tables_list = list(relevant_tables)
-            path_futures = []
-            
+            tables_list   = list(relevant_tables)
+            path_futures  = []
+
             with ThreadPoolExecutor() as executor:
-                # Parallelize shortest path finding queries
                 for i in range(len(tables_list)):
                     for j in range(i + 1, len(tables_list)):
-                        path_futures.append(executor.submit(self._find_shortest_path, tables_list[i], tables_list[j]))
-                
-                # Gather intermediate path nodes and adjacent pairs
-                adjacent_pairs = set()
+                        path_futures.append(
+                            executor.submit(
+                                self._find_shortest_path, tables_list[i], tables_list[j]
+                            )
+                        )
+
+                adjacent_pairs: set = set()
                 for future in as_completed(path_futures):
                     try:
                         path_nodes = future.result()
@@ -388,66 +475,98 @@ class ContextRetriever:
                             for node in path_nodes:
                                 additional_tables.add(node)
                             for k in range(len(path_nodes) - 1):
-                                ta, tb = path_nodes[k], path_nodes[k+1]
-                                pair = tuple(sorted([ta, tb]))
-                                adjacent_pairs.add(pair)
+                                ta, tb = path_nodes[k], path_nodes[k + 1]
+                                adjacent_pairs.add(tuple(sorted([ta, tb])))
                     except Exception as e:
                         print(f"Error in Neo4j pathfinding thread: {e}")
-                
-                # Concurrently run join detail lookups for adjacent pairs
+
                 join_futures = {}
                 for ta, tb in adjacent_pairs:
                     join_futures[executor.submit(self._find_join_details, ta, tb)] = (ta, tb)
-                
+
                 for future in as_completed(join_futures):
                     try:
                         details = future.result()
                         join_paths.extend(details)
                     except Exception as e:
                         ta, tb = join_futures[future]
-                        print(f"Error in Neo4j join column lookup thread for {ta}-{tb}: {e}")
+                        print(f"Error in Neo4j join column lookup for {ta}-{tb}: {e}")
 
             relevant_tables.update(additional_tables)
 
-        # 2. Build Context from Info DB
+        # ── Phase 3: Build context string ─────────────────────────────────────
         context_parts = []
-        context_parts.append("### SEMANTIC VALUE MAPPINGS (MANDATORY)")
-        context_parts.append("The following mappings resolve your query terms to exact database strings. Use the 'Exact Value' in your SQL filters:")
-        for gm in grounding_mappings:
+
+        # Section A: Ontology Column Aliases (NEW — must appear first and prominently)
+        ontology_aliases = [
+            m for m in grounding_mappings
+            if m.startswith("Column Alias")
+            or m.startswith("Metric Alias")
+            or m.startswith("Entity Alias")
+        ]
+        if ontology_aliases:
+            context_parts.append(
+                "### ONTOLOGY COLUMN ALIASES (MANDATORY — DO NOT SUBSTITUTE)\n"
+                "These mappings are authoritative. For each user term listed below,\n"
+                "you MUST use exactly the specified column(s) or SQL expression.\n"
+                "You are FORBIDDEN from substituting any other column from the same table,\n"
+                "even if the column name appears more similar to the user's term."
+            )
+            for alias in ontology_aliases:
+                context_parts.append(f"- {alias}")
+
+        # Section B: Semantic value mappings (existing)
+        non_ontology_mappings = [
+            m for m in grounding_mappings
+            if not m.startswith("Column Alias")
+            and not m.startswith("Metric Alias")
+            and not m.startswith("Entity Alias")
+        ]
+        context_parts.append("\n### SEMANTIC VALUE MAPPINGS (MANDATORY)")
+        context_parts.append(
+            "The following mappings resolve your query terms to exact database strings. "
+            "Use the 'Exact Value' in your SQL filters:"
+        )
+        for gm in non_ontology_mappings:
             context_parts.append(f"- {gm}")
-        
+
+        # Section C: Schema DDL
         context_parts.append("\n### CANONICAL SCHEMA DEFINITIONS")
-        
+
         with self.engine.connect() as conn:
             for table_name in relevant_tables:
-                # Fetch Table metadata and samples (Case-insensitive)
-                res = conn.execute(text("SELECT name, is_view, samples FROM meta_tables WHERE LOWER(name) = LOWER(:t)"), {"t": table_name}).fetchone()
-                if not res: continue
-                
+                res = conn.execute(
+                    text(
+                        "SELECT name, is_view, samples FROM meta_tables "
+                        "WHERE LOWER(name) = LOWER(:t)"
+                    ),
+                    {"t": table_name},
+                ).fetchone()
+                if not res:
+                    continue
+
                 table_type = "VIEW" if res[1] else "TABLE"
-                
-                # Fetch Columns (no unique_values lookup to save tokens)
-                cols = conn.execute(text("SELECT name, type FROM meta_columns WHERE table_name = :t"), {"t": table_name}).fetchall()
-                
-                # Build clean, super-compact SQL DDL format
+                cols = conn.execute(
+                    text("SELECT name, type FROM meta_columns WHERE table_name = :t"),
+                    {"t": table_name},
+                ).fetchall()
+
                 ddl_lines = [f"CREATE {table_type} {table_name} ("]
-                col_defs = [f"    {c[0]} {c[1]}" for c in cols]
+                col_defs  = [f"    {c[0]} {c[1]}" for c in cols]
                 ddl_lines.append(",\n".join(col_defs))
                 ddl_lines.append(");")
-                
-                # Format exactly 1 sample row as a SQL comment
+
                 samples = json.loads(res[2])
                 if samples:
-                    ddl_lines.append(f"-- Sample Row: {json.dumps(samples[0], ensure_ascii=False)}")
-                
+                    ddl_lines.append(
+                        f"-- Sample Row: {json.dumps(samples[0], ensure_ascii=False)}"
+                    )
+
                 context_parts.append("\n".join(ddl_lines))
 
-        # 3. Join Reasoning (Neo4j shortest paths)
+        # Section D: Join paths
         if join_paths:
             context_parts.append("\n### SUGGESTED JOIN PATHS AND CONSTRAINTS")
             context_parts.extend(join_paths)
 
         return "\n".join(context_parts), grounding_mappings
-
-if __name__ == "__main__":
-    pass
