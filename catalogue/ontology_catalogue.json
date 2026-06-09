@@ -1,0 +1,432 @@
+{
+    "database": "Northwind",
+    "version": "1.0",
+    "description": "Semantic attribute mappings for the Northwind trading database",
+    "concepts": [
+        {
+            "id": "ONT_ENT_001",
+            "concept": "customer",
+            "type": "entity",
+            "maps_to": {
+                "table": "Customers"
+            },
+            "synonyms": [
+                "client",
+                "buyer",
+                "account",
+                "purchaser",
+                "patron"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ENT_002",
+            "concept": "employee",
+            "type": "entity",
+            "maps_to": {
+                "table": "Employees"
+            },
+            "synonyms": [
+                "staff",
+                "worker",
+                "rep",
+                "sales rep",
+                "agent",
+                "associate"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ENT_003",
+            "concept": "product",
+            "type": "entity",
+            "maps_to": {
+                "table": "Products"
+            },
+            "synonyms": [
+                "item",
+                "goods",
+                "article",
+                "sku",
+                "merchandise"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ENT_004",
+            "concept": "supplier",
+            "type": "entity",
+            "maps_to": {
+                "table": "Suppliers"
+            },
+            "synonyms": [
+                "vendor",
+                "provider",
+                "manufacturer",
+                "source"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ENT_005",
+            "concept": "order",
+            "type": "entity",
+            "maps_to": {
+                "table": "Orders"
+            },
+            "synonyms": [
+                "purchase",
+                "transaction",
+                "sale",
+                "shipment"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ENT_006",
+            "concept": "category",
+            "type": "entity",
+            "maps_to": {
+                "table": "Categories"
+            },
+            "synonyms": [
+                "product category",
+                "product group",
+                "product type",
+                "segment"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_001",
+            "concept": "customer name",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Customers",
+                "columns": [
+                    "ContactName"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "contact name",
+                "customer contact",
+                "person name",
+                "client name"
+            ],
+            "confidence": 1.0,
+            "priority": 1,
+            "notes": "The human representative at the customer account"
+        },
+        {
+            "id": "ONT_ATTR_002",
+            "concept": "customer company",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Customers",
+                "columns": [
+                    "CompanyName"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "company name",
+                "business name",
+                "organisation name",
+                "firm name",
+                "account name",
+                "customer firm"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_003",
+            "concept": "customer title",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Customers",
+                "columns": [
+                    "ContactTitle"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "contact title",
+                "job title",
+                "role",
+                "position"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_004",
+            "concept": "customer city",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Customers",
+                "columns": [
+                    "City"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "city",
+                "customer location city",
+                "city of customer"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_005",
+            "concept": "customer country",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Customers",
+                "columns": [
+                    "Country"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "country",
+                "customer location country",
+                "nation"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_006",
+            "concept": "employee name",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Employees",
+                "columns": [
+                    "FirstName",
+                    "LastName"
+                ],
+                "combination": "concat",
+                "sql_expression": "Employees.FirstName || ' ' || Employees.LastName"
+            },
+            "synonyms": [
+                "staff name",
+                "worker name",
+                "rep name",
+                "sales rep name",
+                "agent name",
+                "associate name"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_007",
+            "concept": "employee title",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Employees",
+                "columns": [
+                    "Title"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "job title",
+                "staff title",
+                "employee role",
+                "staff role"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_008",
+            "concept": "product name",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Products",
+                "columns": [
+                    "ProductName"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "item name",
+                "goods name",
+                "article name",
+                "sku name"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_009",
+            "concept": "product price",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Products",
+                "columns": [
+                    "UnitPrice"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "unit price",
+                "list price",
+                "catalogue price",
+                "price per unit"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_010",
+            "concept": "supplier name",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Suppliers",
+                "columns": [
+                    "CompanyName"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "vendor name",
+                "provider name",
+                "manufacturer name",
+                "supplier company"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_011",
+            "concept": "supplier country",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Suppliers",
+                "columns": [
+                    "Country"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "vendor country",
+                "source country",
+                "supplier location"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_ATTR_012",
+            "concept": "category name",
+            "type": "attribute_alias",
+            "maps_to": {
+                "table": "Categories",
+                "columns": [
+                    "CategoryName"
+                ],
+                "combination": "single"
+            },
+            "synonyms": [
+                "product category name",
+                "group name",
+                "segment name"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_METRIC_001",
+            "concept": "order revenue",
+            "type": "metric_alias",
+            "maps_to": {
+                "expression": "ROUND(SUM(\"Order Details\".Quantity * \"Order Details\".UnitPrice), 2)",
+                "requires_tables": [
+                    "Order Details"
+                ],
+                "label": "order_revenue"
+            },
+            "synonyms": [
+                "gross revenue",
+                "gross sales",
+                "sales",
+                "total revenue"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_METRIC_002",
+            "concept": "discounted revenue",
+            "type": "metric_alias",
+            "maps_to": {
+                "expression": "ROUND(SUM(\"Order Details\".Quantity * \"Order Details\".UnitPrice * (1 - \"Order Details\".Discount)), 2)",
+                "requires_tables": [
+                    "Order Details"
+                ],
+                "label": "discounted_revenue"
+            },
+            "synonyms": [
+                "net revenue",
+                "revenue after discount",
+                "net sales"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_REL_001",
+            "concept": "customer orders",
+            "type": "relationship",
+            "maps_to": {
+                "from_table": "Customers",
+                "to_table": "Orders",
+                "join_condition": "Customers.CustomerID = Orders.CustomerID"
+            },
+            "synonyms": [
+                "orders by customer",
+                "customer purchases",
+                "purchases by customer"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        },
+        {
+            "id": "ONT_REL_002",
+            "concept": "order products",
+            "type": "relationship",
+            "maps_to": {
+                "from_table": "Orders",
+                "to_table": "Products",
+                "join_path": [
+                    "Orders",
+                    "Order Details",
+                    "Products"
+                ],
+                "join_condition": "Orders.OrderID = \"Order Details\".OrderID AND \"Order Details\".ProductID = Products.ProductID"
+            },
+            "synonyms": [
+                "products in order",
+                "items in order"
+            ],
+            "confidence": 1.0,
+            "priority": 1
+        }
+    ],
+    "defaults": {
+        "fallback_to_schema_matching": true,
+        "minimum_confidence_threshold": 0.7,
+        "prefer_ontology_over_vector": true
+    }
+}
