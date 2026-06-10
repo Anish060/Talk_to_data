@@ -1,4 +1,4 @@
-# 📚 Intern Retrieval System
+# 📚 Talk to data
 
 > **A modern, AI‑augmented retrieval platform** that combines **FastAPI**, **SQLite**, **Neo4j**, **Chroma** vector search, and **Redis** caching. It performs semantic intent extraction, schema relevance scoring, and graceful UI error handling.
 
@@ -20,7 +20,7 @@
 ---
 
 ## 🎯 Project Overview
-The **Intern Retrieval** system provides a unified query interface that:
+The **Talk to data** system provides a unified query interface that:
 - Extracts user intent via LLM (default: Ollama `gemma4:31b-cloud`).
 - Resolves business terms against a **schema relevance score** (minimum 0.7 to accept a query).
 - Retrieves data from:
@@ -97,6 +97,11 @@ CLIENT_DOC_PATH=d:\Retrival\catalogue\field_catalogue2.json
 
 # ────────────────────── REDIS CACHING ──────────────────────
 REDIS_URL=redis://127.0.0.1:6379/0
+
+# ────────────────────── ONTOLOGY CONFIGURATION ──────────────────────
+# Path to the ontology catalogue JSON file (containing entities, attributes, synonyms, mappings)
+ONTOLOGY_CATALOGUE_PATH=d:\Retrival\catalogue\ontology_catalogue.json
+
 ```
 
 **Important:** After editing `.env`, restart the FastAPI server so the new values are picked up.
