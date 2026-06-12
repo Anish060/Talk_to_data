@@ -67,25 +67,53 @@ async def process_query(request: QueryRequest, http_request: Request):
         query_hash = hashlib.sha256(query_sanitized.encode('utf-8')).hexdigest()
         cache_key = f"verified_query:{query_hash}"
 
+        # Retrieve active connection instances from application state
+        db_engine = http_request.app.state.db_engine
+        neo4j = http_request.app.state.neo4j
+        vector = http_request.app.state.vector
+
         # 1. Try Redis cache lookup
         if redis_client.is_connected:
             cached_data = redis_client.get(cache_key)
             if cached_data:
                 payload = json.loads(cached_data)
-                payload["cached"] = True
-                print(f"⚡ [CACHE] Cache hit in Redis for query: '{request.query}'")
-                return payload
+                print(f"⚡ [CACHE] Cache hit in Redis for query: '{request.query}'. Executing SQL live...")
+                sql = payload["sql"]
+                if not _is_safe_sql(sql):
+                    raise HTTPException(status_code=400, detail="Cached SQL contains prohibited operations.")
+                with db_engine.connect() as conn:
+                    df = pd.read_sql(text(sql), conn)
+                    results = df.to_dict(orient="records")
+                    columns = df.columns.tolist()
+                return {
+                    "intent": payload["intent"],
+                    "plan": payload["plan"],
+                    "sql": sql,
+                    "grounding": payload.get("grounding", []),
+                    "results": results,
+                    "columns": columns,
+                    "cached": True
+                }
         # 2. Try Local Memory cache lookup (if Redis is offline)
         elif query_hash in _local_verified_query_cache:
             payload = _local_verified_query_cache[query_hash].copy()
-            payload["cached"] = True
-            print(f"⚡ [CACHE] Cache hit in Local Memory for query: '{request.query}'")
-            return payload
-
-        # Retrieve active connection instances from application state
-        db_engine = http_request.app.state.db_engine
-        neo4j = http_request.app.state.neo4j
-        vector = http_request.app.state.vector
+            print(f"⚡ [CACHE] Cache hit in Local Memory for query: '{request.query}'. Executing SQL live...")
+            sql = payload["sql"]
+            if not _is_safe_sql(sql):
+                raise HTTPException(status_code=400, detail="Cached SQL contains prohibited operations.")
+            with db_engine.connect() as conn:
+                df = pd.read_sql(text(sql), conn)
+                results = df.to_dict(orient="records")
+                columns = df.columns.tolist()
+            return {
+                "intent": payload["intent"],
+                "plan": payload["plan"],
+                "sql": sql,
+                "grounding": payload.get("grounding", []),
+                "results": results,
+                "columns": columns,
+                "cached": True
+            }
 
         print(f"--- Processing query: {request.query} ---")
         # 1. Intent
@@ -157,11 +185,17 @@ async def process_query(request: QueryRequest, http_request: Request):
             "cached": False
         }
 
-        # 4. Save to cache database for subsequent identical queries
+        # 4. Save to cache database for subsequent identical queries (cache translation only)
+        cache_payload = {
+            "intent": intent,
+            "plan": plan,
+            "sql": sql,
+            "grounding": grounding
+        }
         if redis_client.is_connected:
-            redis_client.setex(cache_key, 86400, json.dumps(response_payload))
+            redis_client.setex(cache_key, 86400, json.dumps(cache_payload))
         else:
-            _local_verified_query_cache[query_hash] = response_payload
+            _local_verified_query_cache[query_hash] = cache_payload
 
         return response_payload
     except Exception as e:
